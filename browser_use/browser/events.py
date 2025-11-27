@@ -130,7 +130,7 @@ class ClickElementEvent(ElementSelectedEvent[dict[str, Any] | None]):
 	# click_count: int = 1           # TODO
 	# expect_download: bool = False  # moved to downloads_watchdog.py
 
-	event_timeout: float | None = _get_timeout('TIMEOUT_ClickElementEvent', 15.0)  # seconds
+	event_timeout: float | None = _get_timeout('TIMEOUT_ClickElementEvent', 60.0)  # seconds - increased for Playwright operations
 
 
 class ClickCoordinateEvent(BaseEvent[dict]):

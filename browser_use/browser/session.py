@@ -722,7 +722,7 @@ class BrowserSession(BaseModel):
 				if not target_id:
 					self.logger.debug('[on_NavigateToUrlEvent] No reusable about:blank tab found, creating new tab...')
 					try:
-						target_id = await self._cdp_create_new_page('about:blank')
+						target_id = await self._playwright_create_new_page('about:blank')
 						self.logger.debug(f'Created new tab #{target_id[-4:]}')
 						# Dispatch TabCreatedEvent for new tab
 						await self.event_bus.dispatch(TabCreatedEvent(target_id=target_id, url='about:blank'))
@@ -900,9 +900,7 @@ class BrowserSession(BaseModel):
 				event.target_id = page_targets[-1].target_id
 			else:
 				# No pages open at all, create a new one (handles switching to it automatically)
-				assert self._cdp_client_root is not None, 'CDP client root not initialized - browser may not be connected yet'
-				new_target = await self._cdp_client_root.send.Target.createTarget(params={'url': 'about:blank'})
-				target_id = new_target['targetId']
+				target_id = await self._playwright_create_new_page('about:blank')
 				# Don't await, these may circularly trigger SwitchTabEvent and could deadlock, dispatch to enqueue and return
 				self.event_bus.dispatch(TabCreatedEvent(url='about:blank', target_id=target_id))
 				self.event_bus.dispatch(AgentFocusChangedEvent(target_id=target_id, url='about:blank'))
@@ -1066,13 +1064,8 @@ class BrowserSession(BaseModel):
 		return self._cdp_client_root
 
 	async def new_page(self, url: str | None = None) -> 'Page':
-		"""Create a new page (tab)."""
-		from cdp_use.cdp.target.commands import CreateTargetParameters
-
-		params: CreateTargetParameters = {'url': url or 'about:blank'}
-		result = await self.cdp_client.send.Target.createTarget(params)
-
-		target_id = result['targetId']
+		"""Create a new page (tab) using Playwright."""
+		target_id = await self._playwright_create_new_page(url=url or 'about:blank')
 
 		# Import here to avoid circular import
 		from browser_use.actor.page import Page as Target
@@ -1330,6 +1323,7 @@ class BrowserSession(BaseModel):
 		from browser_use.browser.watchdogs.aboutblank_watchdog import AboutBlankWatchdog
 
 		# from browser_use.browser.crash_watchdog import CrashWatchdog
+		from browser_use.browser.watchdogs.playwright_action_watchdog import PlaywrightActionWatchdog
 		from browser_use.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
 		from browser_use.browser.watchdogs.dom_watchdog import DOMWatchdog
 		from browser_use.browser.watchdogs.downloads_watchdog import DownloadsWatchdog
@@ -1419,9 +1413,10 @@ class BrowserSession(BaseModel):
 		# self.event_bus.on(BrowserConnectedEvent, self._permissions_watchdog.on_BrowserConnectedEvent)
 		self._permissions_watchdog.attach_to_session()
 
-		# Initialize DefaultActionWatchdog (handles all default actions like click, type, scroll, go back, go forward, refresh, wait, send keys, upload file, scroll to text, etc.)
-		DefaultActionWatchdog.model_rebuild()
-		self._default_action_watchdog = DefaultActionWatchdog(event_bus=self.event_bus, browser_session=self)
+		# Initialize PlaywrightActionWatchdog (handles all default actions like click, type, scroll, go back, go forward, refresh, wait, send keys, upload file, scroll to text, etc.)
+		PlaywrightActionWatchdog.model_rebuild()
+		# DefaultActionWatchdog.model_rebuild()
+		self._default_action_watchdog = PlaywrightActionWatchdog(event_bus=self.event_bus, browser_session=self)
 		# self.event_bus.on(ClickElementEvent, self._default_action_watchdog.on_ClickElementEvent)
 		# self.event_bus.on(TypeTextEvent, self._default_action_watchdog.on_TypeTextEvent)
 		# self.event_bus.on(ScrollEvent, self._default_action_watchdog.on_ScrollEvent)
@@ -1552,8 +1547,7 @@ class BrowserSession(BaseModel):
 
 			# Ensure we have at least one page
 			if not page_targets_from_manager:
-				new_target = await self._cdp_client_root.send.Target.createTarget(params={'url': 'about:blank'})
-				target_id = new_target['targetId']
+				target_id = await self._playwright_create_new_page('about:blank')
 				self.logger.debug(f'📄 Created new blank page: {target_id}')
 			else:
 				target_id = page_targets_from_manager[0].target_id
@@ -2822,6 +2816,25 @@ class BrowserSession(BaseModel):
 				result.append(target_info)
 
 		return result
+
+	async def _playwright_create_new_page(self, url: str = 'about:blank') -> str:
+		"""Create a new page/tab using Playwright. Returns target ID.
+		
+		This ensures Playwright is aware of all pages created, avoiding stale references.
+		"""
+		if not hasattr(self, '_default_action_watchdog') or not self._default_action_watchdog:
+			raise RuntimeError('PlaywrightActionWatchdog not available - cannot create page via Playwright')
+		
+		from browser_use.browser.watchdogs.playwright_action_watchdog import PlaywrightActionWatchdog
+		if not isinstance(self._default_action_watchdog, PlaywrightActionWatchdog):
+			raise RuntimeError('Default action watchdog is not PlaywrightActionWatchdog - cannot create page via Playwright')
+		
+		if not self._default_action_watchdog._playwright_initialized:
+			raise RuntimeError('Playwright not initialized - cannot create page')
+		
+		target_id = await self._default_action_watchdog.create_page_via_playwright(url=url)
+		self.logger.debug(f'Created new page via Playwright: target_id={target_id[-8:]}')
+		return target_id
 
 	async def _cdp_create_new_page(self, url: str = 'about:blank', background: bool = False, new_window: bool = False) -> str:
 		"""Create a new page/tab using CDP Target.createTarget. Returns target ID."""

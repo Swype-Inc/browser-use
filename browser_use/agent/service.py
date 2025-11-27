@@ -829,6 +829,12 @@ Examine the current page state carefully:
 - What elements are visible and interactive?
 - What is the immediate next step to leave this page?
 
+IMPORTANT: For form fields that require values:
+- **Passwords**: YOU must generate a password that meets the requirements shown on the page. Do NOT plan to ask the user for a password. Generate it yourself (e.g., "Generate a password meeting requirements: 8+ chars, uppercase, lowercase, number, special char").
+- **Email addresses**: Use the email from user information if available, otherwise generate a valid email format.
+- **Other required fields**: Fill them with appropriate values from the user information or generate reasonable test data.
+- **Never plan to "ask the user" or "wait for user input"** - you must provide the values yourself.
+
 Your response must include:
 1. **Rationale**: Explain your thought process - what page did you identify? What elements did you observe? Why did you choose these specific steps? Be thorough and detailed.
 2. **Plan**: A concise, actionable plan with 3-5 steps maximum, focused on completing the current page.
@@ -2047,6 +2053,10 @@ Since no plan is available, you should:
 
 		try:
 			await self._log_agent_run()
+
+			# Fail-fast validation: Check configuration and dependencies
+			from browser_use.agent.config import check as validate_config
+			validate_config(self)
 
 			self.logger.debug(
 				f'🔧 Agent setup: Agent Session ID {self.session_id[-4:]}, Task ID {self.task_id[-4:]}, Browser Session ID {self.browser_session.id[-4:] if self.browser_session else "None"} {"(connecting via CDP)" if (self.browser_session and self.browser_session.cdp_url) else "(launching local browser)"}'

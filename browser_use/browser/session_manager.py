@@ -649,7 +649,7 @@ class SessionManager:
 			else:
 				# No pages exist - create a new one
 				self.logger.warning('[SessionManager] No tabs remain! Creating new tab for agent...')
-				new_target_id = await self.browser_session._cdp_create_new_page('about:blank')
+				new_target_id = await self.browser_session._playwright_create_new_page('about:blank')
 				self.logger.info(f'[SessionManager] Created new tab {new_target_id[:8]}... for agent')
 
 				# Dispatch TabCreatedEvent so watchdogs can initialize
@@ -695,7 +695,7 @@ class SessionManager:
 				f'[SessionManager] ❌ Failed to get session for {new_target_id[:8]}... after 2s, creating emergency fallback tab'
 			)
 
-			fallback_target_id = await self.browser_session._cdp_create_new_page('about:blank')
+			fallback_target_id = await self.browser_session._playwright_create_new_page('about:blank')
 			self.logger.warning(f'[SessionManager] Created emergency fallback tab {fallback_target_id[:8]}...')
 
 			# Try one more time with fallback
