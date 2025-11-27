@@ -337,34 +337,73 @@ class TokenCost:
 
 		# Create a wrapped version that tracks usage
 		async def tracked_ainvoke(messages, output_format=None, **kwargs):
+			# Log LLM input in gray
+			GRAY = '\033[90m'
+			RESET = '\033[0m'
+			
+			logger.info(f'{GRAY}{"=" * 80}{RESET}')
+			logger.info(f'{GRAY}📝 LLM INPUT ({llm.provider}/{llm.model}){RESET}')
+			logger.info(f'{GRAY}{"=" * 80}{RESET}')
+			for i, msg in enumerate(messages):
+				# Use the .text property which handles string/list content automatically
+				content = msg.text
+				
+				role_emoji = '🧠' if msg.role == 'system' else '💬' if msg.role == 'user' else '🔨'
+				logger.info(f'{GRAY}{role_emoji} [{msg.role.upper()}]:{RESET}')
+				# Truncate very long content for readability
+				if len(content) > 5000:
+					logger.info(f'{GRAY}{content[:5000]}...\n[Truncated - {len(content)} total chars]{RESET}')
+				else:
+					logger.info(f'{GRAY}{content}{RESET}')
+				if i < len(messages) - 1:
+					logger.info('')  # Empty line between messages
+			
+			logger.info(f'{GRAY}{"=" * 80}{RESET}')
+			
 			# Call the original method, passing through any additional kwargs
 			result = await original_ainvoke(messages, output_format, **kwargs)
-
-		# Track usage if available (no await needed since add_usage is now sync)
-		# Use llm.model instead of llm.name for consistency with get_usage_tokens_for_model()
-		if result.usage:
-			usage = token_cost_service.add_usage(llm.model, result.usage)
-
-			# Immediate cost logging with magenta color
-			C_MAGENTA = '\033[35m'
-			C_RESET = '\033[0m'
 			
-			prompt_tokens = usage.usage.prompt_tokens
-			prompt_cached = usage.usage.prompt_cached_tokens or 0
-			completion_tokens = usage.usage.completion_tokens
-			total_tokens = usage.usage.total_tokens
+			# Log LLM output in gray
+			logger.info(f'{GRAY}📤 LLM OUTPUT ({llm.provider}/{llm.model}){RESET}')
+			logger.info(f'{GRAY}{"=" * 80}{RESET}')
 			
-			cost_logger.info(
-				f'{C_MAGENTA}[cost]{C_RESET} 🧠 {llm.model} | '
-				f'📥 {prompt_tokens - prompt_cached:,} + 💾 {prompt_cached:,} = {prompt_tokens:,} | '
-				f'📤 {completion_tokens:,} | 📊 {total_tokens:,}'
-			)
+			# Format response completion
+			if hasattr(result.completion, 'model_dump'):
+				output_str = str(result.completion.model_dump())
+			else:
+				output_str = str(result.completion)
+			
+			if len(output_str) > 5000:
+				logger.info(f'{GRAY}{output_str[:5000]}...\n[Truncated - {len(output_str)} total chars]{RESET}')
+			else:
+				logger.info(f'{GRAY}{output_str}{RESET}')
+			logger.info(f'{GRAY}{"=" * 80}{RESET}\n')
 
-			logger.debug(f'Token cost service: {usage}')
+			# Track usage if available (no await needed since add_usage is now sync)
+			# Use llm.model instead of llm.name for consistency with get_usage_tokens_for_model()
+			if result.usage:
+				usage = token_cost_service.add_usage(llm.model, result.usage)
 
-			create_task_with_error_handling(
-				token_cost_service._log_usage(llm.model, usage), name='log_token_usage', suppress_exceptions=True
-			)
+				# Immediate cost logging with magenta color
+				C_MAGENTA = '\033[35m'
+				C_RESET = '\033[0m'
+				
+				prompt_tokens = usage.usage.prompt_tokens
+				prompt_cached = usage.usage.prompt_cached_tokens or 0
+				completion_tokens = usage.usage.completion_tokens
+				total_tokens = usage.usage.total_tokens
+				
+				cost_logger.info(
+					f'{C_MAGENTA}[cost]{C_RESET} 🧠 {llm.model} | '
+					f'📥 {prompt_tokens - prompt_cached:,} + 💾 {prompt_cached:,} = {prompt_tokens:,} | '
+					f'📤 {completion_tokens:,} | 📊 {total_tokens:,}'
+				)
+
+				logger.debug(f'Token cost service: {usage}')
+
+				create_task_with_error_handling(
+					token_cost_service._log_usage(llm.model, usage), name='log_token_usage', suppress_exceptions=True
+				)
 
 			# else:
 			# 	await token_cost_service._log_non_usage_llm(llm)

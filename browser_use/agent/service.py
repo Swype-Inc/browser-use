@@ -3,6 +3,7 @@ import gc
 import inspect
 import json
 import logging
+import os
 import re
 import tempfile
 import time
@@ -2033,7 +2034,7 @@ Since no plan is available, you should:
 		on_step_start: AgentHookFunc | None = None,
 		on_step_end: AgentHookFunc | None = None,
 	) -> AgentHistoryList[AgentStructuredOutput]:
-		"""Execute the task with maximum number of steps"""
+		"""Execute the task using job application pipeline."""
 
 		loop = asyncio.get_event_loop()
 		agent_run_error: str | None = None  # Initialize error tracking variable
@@ -2107,62 +2108,70 @@ Since no plan is available, you should:
 			except Exception as e:
 				raise e
 
-			self.logger.debug(
-				f'🔄 Starting main execution loop with max {max_steps} steps (currently at step {self.state.n_steps})...'
+			# Initialize job application pipeline
+			from browser_use.job_application.pipeline.service import JobApplicationPipeline
+			from browser_use.job_application.websocket.client import AnswerGeneratorClient
+
+			# Initialize websocket client if URL is configured
+			answer_generator_client = None
+			websocket_url = os.getenv('ANSWER_GENERATOR_WEBSOCKET_URL')
+			if websocket_url:
+				answer_generator_client = AnswerGeneratorClient(websocket_url=websocket_url)
+				try:
+					await answer_generator_client.connect()
+				except Exception as e:
+					self.logger.warning(f'Failed to connect to answer generator websocket: {e}')
+
+			# Create and run pipeline
+			pipeline = JobApplicationPipeline(
+				browser_session=self.browser_session,
+				llm=self.llm,
+				answer_generator_client=answer_generator_client,
 			)
-			while self.state.n_steps <= max_steps:
-				current_step = self.state.n_steps - 1  # Convert to 0-indexed for step_info
 
-				# Use the consolidated pause state management
-				if self.state.paused:
-					self.logger.debug(f'⏸️ Step {self.state.n_steps}: Agent paused, waiting to resume...')
-					await self._external_pause_event.wait()
-					signal_handler.reset()
+			self.logger.info('🚀 Starting job application pipeline...')
+			pipeline_result = await pipeline.run()
 
-				# Check if we should stop due to too many failures, if final_response_after_failure is True, we try one last time
-				if (self.state.consecutive_failures) >= self.settings.max_failures + int(
-					self.settings.final_response_after_failure
-				):
-					self.logger.error(f'❌ Stopping due to {self.settings.max_failures} consecutive failures')
-					agent_run_error = f'Stopped due to {self.settings.max_failures} consecutive failures'
-					break
-
-				# Check control flags before each step
-				if self.state.stopped:
-					self.logger.info('🛑 Agent stopped')
-					agent_run_error = 'Agent stopped programmatically'
-					break
-
-				step_info = AgentStepInfo(step_number=current_step, max_steps=max_steps)
-				is_done = await self._execute_step(current_step, max_steps, step_info, on_step_start, on_step_end)
-
-				if is_done:
-					# Agent has marked the task as done
-					if self._demo_mode_enabled and self.history.history:
-						final_result_text = self.history.final_result() or 'Task completed'
-						await self._demo_mode_log(f'Final Result: {final_result_text}', 'success', {'tag': 'task'})
-
-					should_delay_close = True
-					break
+			# Convert ApplicationResult to AgentHistoryList format
+			if pipeline_result.success:
+				if pipeline_result.completed:
+					final_result_text = f'Application completed successfully. Answered {pipeline_result.questions_answered} questions across {pipeline_result.sections_completed} sections.'
+				elif pipeline_result.already_applied:
+					final_result_text = 'User has already applied to this job posting.'
+				else:
+					final_result_text = 'Pipeline completed.'
 			else:
-				agent_run_error = 'Failed to complete task in maximum steps'
+				final_result_text = f'Pipeline failed: {pipeline_result.error}'
+				agent_run_error = pipeline_result.error
 
-				self.history.add_item(
-					AgentHistory(
-						model_output=None,
-						result=[ActionResult(error=agent_run_error, include_in_memory=True)],
-						state=BrowserStateHistory(
-							url='',
-							title='',
-							tabs=[],
-							interacted_element=[],
-							screenshot_path=None,
-						),
-						metadata=None,
-					)
+			# Add pipeline result to history
+			# Get current URL safely (may fail if browser session is closed)
+			try:
+				current_url = await self.browser_session.get_current_page_url()
+			except Exception:
+				current_url = ''
+
+			self.history.add_item(
+				AgentHistory(
+					model_output=None,
+					result=[ActionResult(extracted_content=final_result_text, include_in_memory=True)],
+					state=BrowserStateHistory(
+						url=current_url,
+						title='',
+						tabs=[],
+						interacted_element=[],
+						screenshot_path=None,
+					),
+					metadata=None,
 				)
+			)
 
-				self.logger.info(f'❌ {agent_run_error}')
+			if pipeline_result.success and pipeline_result.completed:
+				should_delay_close = True
+			elif pipeline_result.success and pipeline_result.already_applied:
+				should_delay_close = True
+			elif not pipeline_result.success:
+				agent_run_error = pipeline_result.error or 'Pipeline failed'
 
 			self.history.usage = await self.token_cost_service.get_usage_summary()
 
