@@ -340,16 +340,31 @@ class TokenCost:
 			# Call the original method, passing through any additional kwargs
 			result = await original_ainvoke(messages, output_format, **kwargs)
 
-			# Track usage if available (no await needed since add_usage is now sync)
-			# Use llm.model instead of llm.name for consistency with get_usage_tokens_for_model()
-			if result.usage:
-				usage = token_cost_service.add_usage(llm.model, result.usage)
+		# Track usage if available (no await needed since add_usage is now sync)
+		# Use llm.model instead of llm.name for consistency with get_usage_tokens_for_model()
+		if result.usage:
+			usage = token_cost_service.add_usage(llm.model, result.usage)
 
-				logger.debug(f'Token cost service: {usage}')
+			# Immediate cost logging with magenta color
+			C_MAGENTA = '\033[35m'
+			C_RESET = '\033[0m'
+			
+			prompt_tokens = usage.usage.prompt_tokens
+			prompt_cached = usage.usage.prompt_cached_tokens or 0
+			completion_tokens = usage.usage.completion_tokens
+			total_tokens = usage.usage.total_tokens
+			
+			cost_logger.info(
+				f'{C_MAGENTA}[cost]{C_RESET} 🧠 {llm.model} | '
+				f'📥 {prompt_tokens - prompt_cached:,} + 💾 {prompt_cached:,} = {prompt_tokens:,} | '
+				f'📤 {completion_tokens:,} | 📊 {total_tokens:,}'
+			)
 
-				create_task_with_error_handling(
-					token_cost_service._log_usage(llm.model, usage), name='log_token_usage', suppress_exceptions=True
-				)
+			logger.debug(f'Token cost service: {usage}')
+
+			create_task_with_error_handling(
+				token_cost_service._log_usage(llm.model, usage), name='log_token_usage', suppress_exceptions=True
+			)
 
 			# else:
 			# 	await token_cost_service._log_non_usage_llm(llm)

@@ -1073,7 +1073,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			# Dispatch to Playwright thread
 			await thread.run_coro(click_coord_coro())
 			
-			# Return coordinates as metadata
+			# Return coordinates as metadata - ma
 			return {'click_x': coordinate_x, 'click_y': coordinate_y}
 
 		except Exception as e:
@@ -1192,8 +1192,6 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 		self, element_node: EnhancedDOMTreeNode, text: str, clear: bool, is_sensitive: bool
 	) -> dict | None:
 		"""CDP fallback for typing when selector is not available."""
-		# Import the CDP implementation from default_action_watchdog
-		from browser_use.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
 		
 		# Create a temporary instance to use its CDP implementation
 		# We'll use the browser_session's existing CDP methods
@@ -1360,28 +1358,8 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			raise
 		except Exception as e:
 			# Fallback to CDP if Playwright fails
-			self.logger.debug(f'Playwright dropdown selection failed: {e}, falling back to CDP')
-			return await self._select_dropdown_cdp_fallback(element_node, event.text, index_for_logging)
-
-	async def _select_dropdown_cdp_fallback(
-		self, element_node: EnhancedDOMTreeNode, target_text: str, index_for_logging: str
-	) -> dict[str, str]:
-		"""CDP fallback for dropdown selection."""
-		# Import CDP implementation from default_action_watchdog
-		from browser_use.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
-		
-		# Create temporary instance to reuse CDP logic
-		temp_watchdog = DefaultActionWatchdog(
-			event_bus=self.event_bus,
-			browser_session=self.browser_session
-		)
-		
-		# Create a mock event to pass to the CDP handler
-		from browser_use.browser.events import SelectDropdownOptionEvent
-		mock_event = SelectDropdownOptionEvent(node=element_node, text=target_text)
-		
-		# Call the CDP implementation
-		return await temp_watchdog.on_SelectDropdownOptionEvent(mock_event)
+			self.logger.debug(f'Playwright dropdown selection failed: {e}')
+			raise e
 
 	# ========== Keep CDP methods for reading operations ==========
 
@@ -1563,13 +1541,10 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			try:
 				selector = self._element_node_to_playwright_selector(element_node)
 			except ValueError:
-				# Fallback to CDP
-				from browser_use.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
-				temp_watchdog = DefaultActionWatchdog(
-					event_bus=self.event_bus,
-					browser_session=self.browser_session
-				)
-				return await temp_watchdog.on_UploadFileEvent(event)
+				# Fallback to CDP if Playwright fails
+				self.logger.debug(f'Playwright scroll to text failed: {e}')
+				raise e
+
 
 			# Use Playwright to set file (dispatch to Playwright thread)
 			thread = _get_playwright_thread()
@@ -1602,11 +1577,5 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			self.logger.debug(f'📜 Scrolled to text: "{event.text}"')
 		except Exception as e:
 			# Fallback to CDP if Playwright fails
-			self.logger.debug(f'Playwright scroll to text failed: {e}, falling back to CDP')
-			from browser_use.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
-			temp_watchdog = DefaultActionWatchdog(
-				event_bus=self.event_bus,
-				browser_session=self.browser_session
-			)
-			return await temp_watchdog.on_ScrollToTextEvent(event)
-
+			self.logger.debug(f'Playwright scroll to text failed: {e}')
+			raise e

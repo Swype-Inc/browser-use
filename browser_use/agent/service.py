@@ -820,13 +820,22 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		
 		# Add planning-specific prompt focused on current page
 		planning_prompt = UserMessage(
-			content="""You are in the PLANNING phase. Your task is to create a focused plan for the CURRENT PAGE ONLY.
+			content="""You are in the PLANNING phase. Your task is to create a focused plan for the CURRENT PAGE ONLY. Do not plan any actions that are beyond what is currently visible on the page.
 
-CRITICAL: Focus ONLY on what needs to be done on the CURRENT PAGE to advance to the NEXT PAGE. Do NOT plan far ahead.
+<state_verification>
+The <browser_state> section contains the authoritative current page state:
+- URL shows the actual page you are on right now
+- Interactive elements list shows what is actually available on this page
+- Screenshot (if provided) shows what is visually present
+
+If agent history describes a different page state than what appears in <browser_state>, the browser state is correct. Agent history may be outdated if navigation occurred between steps. Always verify the current page by checking the URL and visible elements in <browser_state> before planning.
+</state_verification>
+
+If you are on an application page, you will be unable to move to the next page if you attempt to navigate to the next page while there are unanswered questions on the current page.
 
 Examine the current page state carefully:
-- What page are you on? (login, account creation, form, review, etc.)
-- What elements are visible and interactive?
+- What page are you on? (login, account creation, form, review, etc.) - Check the URL and elements in <browser_state>
+- What elements are visible and interactive? - Check the interactive elements list in <browser_state>
 - What is the immediate next step to leave this page?
 
 IMPORTANT: For form fields that require values:
@@ -836,14 +845,14 @@ IMPORTANT: For form fields that require values:
 - **Never plan to "ask the user" or "wait for user input"** - you must provide the values yourself.
 
 Your response must include:
-1. **Rationale**: Explain your thought process - what page did you identify? What elements did you observe? Why did you choose these specific steps? Be thorough and detailed.
+1. **Rationale**: Explain your thought process - what page did you identify from <browser_state>? What elements did you observe in the current DOM? Why did you choose these specific steps? Be thorough and detailed.
 2. **Plan**: A concise, actionable plan with 3-5 steps maximum, focused on completing the current page.
 
 The plan should:
-- Identify what page you're currently on
+- Identify what page you're currently on (based on <browser_state> URL and elements)
 - Determine what needs to be done on THIS page to progress (fill fields, click buttons, etc.)
 - Focus on getting to the NEXT page only - don't plan beyond that
-- Be specific about which elements need interaction (include element indices)
+- Be specific about which elements need interaction (include element indices from <browser_state>)
 - Keep it short - 3-5 steps maximum, focused on the current page
 
 Example: If you're on a login page, plan: "1. Enter email, 2. Enter password, 3. Click Sign In button" - NOT the entire application flow.

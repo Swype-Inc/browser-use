@@ -149,6 +149,9 @@ Personal Information:
 - State: {info['state']}
 - ZIP Code: {info['zip']}
 - Country: {info['country']}
+
+password to use: ObaMa!2025
+account exists: True
 """
     
     if info['address']:
