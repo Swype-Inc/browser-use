@@ -184,6 +184,20 @@ class AgentBrain(BaseModel):
 	next_goal: str
 
 
+class PlanOutput(BaseModel):
+	"""Output model for planning phase - breaks down high-level goal into smaller steps"""
+	model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
+
+	rationale: str = Field(
+		...,
+		description='Your thought process and reasoning for creating this plan. Explain what page you identified, what elements you observed, and why you chose these specific steps.',
+	)
+	plan: str = Field(
+		...,
+		description='A detailed plan breaking down the overarching goal into smaller, manageable intermediate steps. Each step should be specific and actionable.',
+	)
+
+
 class AgentOutput(BaseModel):
 	model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
 

@@ -727,8 +727,19 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			# Phase 1: Prepare context and timing
 			browser_state_summary = await self._prepare_context(step_info)
 
-			# Phase 2: Get model output and execute actions
+			# Phase 2: Plan actions - break down overarching goal into smaller steps
+			await self._plan_actions(browser_state_summary, step_info)
+
+			# Phase 3: Get next actions based on the plan
 			await self._get_next_action(browser_state_summary)
+			
+			# Pause for manual review - press Enter to continue
+			self.logger.info('\033[93m' + '=' * 80 + '\033[0m')  # Yellow separator
+			self.logger.info('\033[93m' + '⏸️  PAUSED: Review the LLM output above. Press Enter to continue executing actions...' + '\033[0m')
+			self.logger.info('\033[93m' + '=' * 80 + '\033[0m')
+			input()  # Wait for user input
+			
+			# Phase 4: Execute actions
 			await self._execute_actions()
 
 			# Phase 3: Post-processing
@@ -740,6 +751,8 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		finally:
 			await self._finalize(browser_state_summary)
+
+		await asyncio.sleep(4) # i need the dom to be fully stable before proceeding
 
 	async def _prepare_context(self, step_info: AgentStepInfo | None = None) -> BrowserStateSummary:
 		"""Prepare the context for the step: browser state, action models, page actions"""
@@ -758,6 +771,12 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			self.logger.debug(f'📸 Got browser state WITH screenshot, length: {len(browser_state_summary.screenshot)}')
 		else:
 			self.logger.debug('📸 Got browser state WITHOUT screenshot')
+
+		# ENFORCE stability check before LLM request - wait for DOM and network stability
+		# This ensures the page is fully loaded even if cached state was returned
+		if self.browser_session._dom_watchdog:
+			self.logger.debug('🔍 Enforcing page stability check before LLM request...')
+			await self.browser_session._dom_watchdog.wait_for_page_stability()
 
 		# Check for new downloads after getting browser state (catches PDF auto-downloads and previous step downloads)
 		await self._check_and_update_downloads(f'Step {self.state.n_steps}: after getting browser state')
@@ -784,16 +803,153 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			page_filtered_actions=page_filtered_actions if page_filtered_actions else None,
 			sensitive_data=self.sensitive_data,
 			available_file_paths=self.available_file_paths,  # Always pass current available_file_paths
+			plan=self.state.last_plan,  # Include current plan in state messages
 		)
 
 		await self._force_done_after_last_step(step_info)
 		await self._force_done_after_failure()
 		return browser_state_summary
 
+	@observe_debug(ignore_input=True, name='plan_actions')
+	async def _plan_actions(self, browser_state_summary: BrowserStateSummary, step_info: AgentStepInfo | None = None) -> None:
+		"""Plan high-level steps to break down the overarching goal into manageable intermediate steps"""
+		from browser_use.agent.views import PlanOutput
+		
+		# Get current messages (state context)
+		input_messages = self._message_manager.get_messages()
+		
+		# Add planning-specific prompt focused on current page
+		planning_prompt = UserMessage(
+			content="""You are in the PLANNING phase. Your task is to create a focused plan for the CURRENT PAGE ONLY.
+
+CRITICAL: Focus ONLY on what needs to be done on the CURRENT PAGE to advance to the NEXT PAGE. Do NOT plan far ahead.
+
+Examine the current page state carefully:
+- What page are you on? (login, account creation, form, review, etc.)
+- What elements are visible and interactive?
+- What is the immediate next step to leave this page?
+
+Your response must include:
+1. **Rationale**: Explain your thought process - what page did you identify? What elements did you observe? Why did you choose these specific steps? Be thorough and detailed.
+2. **Plan**: A concise, actionable plan with 3-5 steps maximum, focused on completing the current page.
+
+The plan should:
+- Identify what page you're currently on
+- Determine what needs to be done on THIS page to progress (fill fields, click buttons, etc.)
+- Focus on getting to the NEXT page only - don't plan beyond that
+- Be specific about which elements need interaction (include element indices)
+- Keep it short - 3-5 steps maximum, focused on the current page
+
+Example: If you're on a login page, plan: "1. Enter email, 2. Enter password, 3. Click Sign In button" - NOT the entire application flow.
+
+Be thorough in your rationale - explain your reasoning clearly."""
+		)
+		
+		planning_messages = input_messages + [planning_prompt]
+		
+		# Log the exact text being sent to the LLM for planning
+		self.logger.info('\033[90m' + '=' * 80 + '\033[0m')  # Gray separator
+		self.logger.info('\033[90m' + f'📝 PLANNING INPUT (Step {self.state.n_steps})' + '\033[0m')
+		self.logger.info('\033[90m' + '=' * 80 + '\033[0m')
+		for i, msg in enumerate(planning_messages):
+			role_emoji = '🧠' if msg.role == 'system' else '💬' if msg.role == 'user' else '🔨'
+			self.logger.info(f'\033[90m{role_emoji} [{msg.role.upper()}]:\033[0m')
+			self.logger.info('\033[90m' + msg.text + '\033[0m')
+			if i < len(planning_messages) - 1:
+				self.logger.info('')  # Empty line between messages
+		self.logger.info('\033[90m' + '=' * 80 + '\033[0m')
+		
+		self.logger.debug(
+			f'📋 Step {self.state.n_steps}: Planning actions with LLM (model: {self.llm.model})...'
+		)
+		
+		try:
+			# Call LLM with PlanOutput schema
+			urls_replaced = self._process_messsages_and_replace_long_urls_shorter_ones(planning_messages)
+			
+			kwargs: dict = {'output_format': PlanOutput}
+			
+			response = await asyncio.wait_for(
+				self.llm.ainvoke(planning_messages, **kwargs),
+				timeout=self.settings.llm_timeout
+			)
+			plan_output: PlanOutput = response.completion  # type: ignore[assignment]
+			
+			# Replace any shortened URLs back to original URLs
+			if urls_replaced:
+				self._recursive_process_all_strings_inside_pydantic_model(plan_output, urls_replaced)
+			
+			# Store plan in state
+			self.state.last_plan = plan_output.plan
+			
+			# Log the plan output in blue (similar format to action selection)
+			self.logger.info('\033[94m' + '=' * 80 + '\033[0m')  # Blue separator
+			self.logger.info('\033[94m' + f'📋 PLAN OUTPUT (Step {self.state.n_steps})' + '\033[0m')
+			self.logger.info('\033[94m' + '=' * 80 + '\033[0m')
+			if plan_output.rationale:
+				self.logger.info('\033[94m' + '💭 Rationale:' + '\033[0m')
+				self.logger.info('\033[94m' + plan_output.rationale + '\033[0m')
+				self.logger.info('')
+			if plan_output.plan:
+				self.logger.info('\033[94m' + '📋 Plan:' + '\033[0m')
+				self.logger.info('\033[94m' + plan_output.plan + '\033[0m')
+				self.logger.info('')
+			self.logger.info('\033[94m' + '=' * 80 + '\033[0m')
+			
+			# Update state messages to include the plan
+			# Get page-specific filtered actions
+			page_filtered_actions = self.tools.registry.get_prompt_description(browser_state_summary.url)
+			
+			self._message_manager.create_state_messages(
+				browser_state_summary=browser_state_summary,
+				model_output=self.state.last_model_output,
+				result=self.state.last_result,
+				step_info=step_info,
+				use_vision=self.settings.use_vision,
+				page_filtered_actions=page_filtered_actions if page_filtered_actions else None,
+				sensitive_data=self.sensitive_data,
+				available_file_paths=self.available_file_paths,
+				plan=self.state.last_plan,  # Include the plan we just created
+			)
+			
+		except TimeoutError:
+			self.logger.warning(f'Planning timed out after {self.settings.llm_timeout} seconds. Continuing without plan.')
+			self.state.last_plan = None
+		except Exception as e:
+			self.logger.warning(f'Planning failed: {e}. Continuing without plan.')
+			self.state.last_plan = None
+
 	@observe_debug(ignore_input=True, name='get_next_action')
 	async def _get_next_action(self, browser_state_summary: BrowserStateSummary) -> None:
 		"""Execute LLM interaction with retry logic and handle callbacks"""
 		input_messages = self._message_manager.get_messages()
+		
+		# Add action selection prompt that references the plan if available
+		if self.state.last_plan:
+			action_prompt = UserMessage(
+				content=f"""You are in the ACTION SELECTION phase. Use the plan provided in <plan> to determine the next specific actions to take.
+
+The plan breaks down the overarching goal into smaller steps. Your job is to:
+1. Review the current plan
+2. Identify which step(s) from the plan should be executed next
+3. Determine the specific actions needed to accomplish those steps
+4. Execute those actions
+
+Focus on making progress on the current step(s) in the plan. If the plan needs updating based on the current state, you can note that in your thinking, but prioritize executing actions that advance the plan."""
+			)
+			input_messages = input_messages + [action_prompt]
+		else:
+			# If no plan exists, add a prompt to work without one
+			action_prompt = UserMessage(
+				content="""You are in the ACTION SELECTION phase. Determine the next specific actions to take based on the current state and task.
+
+Since no plan is available, you should:
+1. Assess the current state
+2. Determine what needs to happen next to progress toward the goal
+3. Execute specific actions to accomplish that"""
+			)
+			input_messages = input_messages + [action_prompt]
+		
 		self.logger.debug(
 			f'🤖 Step {self.state.n_steps}: Calling LLM with {len(input_messages)} messages (model: {self.llm.model})...'
 		)
@@ -816,6 +972,37 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			)
 
 		self.state.last_model_output = model_output
+
+		# Log the model output in light green
+		self.logger.info('\033[92m' + '=' * 80 + '\033[0m')  # Light green separator
+		self.logger.info('\033[92m' + f'🤖 LLM OUTPUT (Step {self.state.n_steps})' + '\033[0m')
+		self.logger.info('\033[92m' + '=' * 80 + '\033[0m')
+		if model_output.thinking:
+			self.logger.info('\033[92m' + '💭 Thinking:' + '\033[0m')
+			self.logger.info('\033[92m' + model_output.thinking + '\033[0m')
+			self.logger.info('')
+		if model_output.evaluation_previous_goal:
+			self.logger.info('\033[92m' + '✅ Evaluation:' + '\033[0m')
+			self.logger.info('\033[92m' + model_output.evaluation_previous_goal + '\033[0m')
+			self.logger.info('')
+		if model_output.memory:
+			self.logger.info('\033[92m' + '🧠 Memory:' + '\033[0m')
+			self.logger.info('\033[92m' + model_output.memory + '\033[0m')
+			self.logger.info('')
+		if model_output.next_goal:
+			self.logger.info('\033[92m' + '🎯 Next Goal:' + '\033[0m')
+			self.logger.info('\033[92m' + model_output.next_goal + '\033[0m')
+			self.logger.info('')
+		if model_output.action:
+			self.logger.info('\033[92m' + '⚡ Actions:' + '\033[0m')
+			for i, action in enumerate(model_output.action, 1):
+				action_dict = action.model_dump(exclude_unset=True)
+				action_str = json.dumps(action_dict, indent=2, ensure_ascii=False)
+				self.logger.info('\033[92m' + f'  Action {i}:' + '\033[0m')
+				self.logger.info('\033[92m' + action_str + '\033[0m')
+				if i < len(model_output.action):
+					self.logger.info('')
+		self.logger.info('\033[92m' + '=' * 80 + '\033[0m')
 
 		# Check again for paused/stopped state after getting model output
 		await self._check_stop_or_pause()
@@ -1334,6 +1521,18 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		# Build kwargs for ainvoke
 		# Note: ChatBrowserUse will automatically generate action descriptions from output_format schema
 		kwargs: dict = {'output_format': self.AgentOutput}
+
+		# Log the exact text being sent to the LLM
+		self.logger.info('\033[90m' + '=' * 80 + '\033[0m')  # Gray separator
+		self.logger.info('\033[90m' + f'📝 LLM INPUT (Step {self.state.n_steps})' + '\033[0m')
+		self.logger.info('\033[90m' + '=' * 80 + '\033[0m')
+		for i, msg in enumerate(input_messages):
+			role_emoji = '🧠' if msg.role == 'system' else '💬' if msg.role == 'user' else '🔨'
+			self.logger.info(f'\033[90m{role_emoji} [{msg.role.upper()}]:\033[0m')
+			self.logger.info('\033[90m' + msg.text + '\033[0m')
+			if i < len(input_messages) - 1:
+				self.logger.info('')  # Empty line between messages
+		self.logger.info('\033[90m' + '=' * 80 + '\033[0m')
 
 		try:
 			response = await self.llm.ainvoke(input_messages, **kwargs)

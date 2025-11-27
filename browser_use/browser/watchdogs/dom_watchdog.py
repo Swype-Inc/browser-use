@@ -238,6 +238,226 @@ class DOMWatchdog(BaseWatchdog):
 
 		return []
 
+	@time_execution_async('wait_for_page_stability')
+	async def wait_for_page_stability(self) -> None:
+		"""Public method to wait for page stability (network + DOM) before LLM requests.
+		
+		This ensures the page is fully loaded and stable before proceeding.
+		Should be called after navigation or any action that might change the page state.
+		"""
+		page_url = await self.browser_session.get_current_page_url()
+		
+		# Check if we should skip for non-HTTP pages
+		not_a_meaningful_website = page_url.lower().split(':', 1)[0] not in ('http', 'https')
+		if not_a_meaningful_website:
+			return
+		
+		self.logger.debug('🔍 DOMWatchdog.wait_for_page_stability: ⏳ Waiting for page stability...')
+		
+		try:
+			# Check for pending network requests BEFORE waiting
+			pending_requests_before_wait = []
+			try:
+				pending_requests_before_wait = await self._get_pending_network_requests()
+				if pending_requests_before_wait:
+					self.logger.debug(f'🔍 Found {len(pending_requests_before_wait)} pending requests before stability wait')
+			except Exception as e:
+				self.logger.debug(f'Failed to get pending requests before wait: {e}')
+			
+			# Run network wait and DOM stability wait in parallel
+			async def wait_for_network():
+				"""Wait for network requests to finish (up to 3 seconds)"""
+				if pending_requests_before_wait:
+					max_network_wait = 3.0
+					check_interval = 0.2
+					elapsed_time = 0.0
+					
+					while elapsed_time < max_network_wait:
+						current_pending = await self._get_pending_network_requests()
+						
+						if not current_pending:
+							self.logger.debug(
+								f'🔍 wait_for_page_stability: ✅ All network requests finished '
+								f'after {elapsed_time:.2f}s'
+							)
+							return elapsed_time
+						
+						await asyncio.sleep(check_interval)
+						elapsed_time += check_interval
+					
+					final_pending = await self._get_pending_network_requests()
+					if final_pending:
+						self.logger.debug(
+							f'🔍 wait_for_page_stability: ⏱️  Network wait timeout. '
+							f'Still {len(final_pending)} pending requests'
+						)
+					return elapsed_time
+				else:
+					self.logger.debug('🔍 wait_for_page_stability: No pending requests, skipping network wait')
+					return 0.0
+			
+			async def wait_for_dom():
+				"""Wait for DOM to stabilize (no mutations for 2 seconds, max 5 seconds)"""
+				self.logger.debug('🔍 wait_for_page_stability: ⏳ Waiting for DOM stability...')
+				dom_stable = await self._wait_for_dom_stability(max_wait_time=5.0, stability_period=2.0)
+				
+				if dom_stable:
+					self.logger.debug('🔍 wait_for_page_stability: ✅ DOM stabilized')
+				else:
+					self.logger.debug('🔍 wait_for_page_stability: ⚠️  DOM stability timeout, proceeding anyway')
+				
+				return dom_stable
+			
+			# Run both waits in parallel and wait for both to complete
+			network_task = create_task_with_error_handling(
+				wait_for_network(),
+				name='wait_for_network',
+				logger_instance=self.logger,
+				suppress_exceptions=True,
+			)
+			dom_task = create_task_with_error_handling(
+				wait_for_dom(),
+				name='wait_for_dom',
+				logger_instance=self.logger,
+				suppress_exceptions=True,
+			)
+			
+			# Wait for both to complete (they run in parallel)
+			network_time, dom_result = await asyncio.gather(network_task, dom_task, return_exceptions=True)
+			
+			# Handle exceptions
+			if isinstance(network_time, Exception):
+				self.logger.warning(f'Network wait failed: {network_time}')
+				network_time = 0.0
+			if isinstance(dom_result, Exception):
+				self.logger.warning(f'DOM wait failed: {dom_result}')
+				dom_result = False
+			
+			# Calculate total wait time (max of network and DOM wait)
+			network_elapsed = network_time if isinstance(network_time, (int, float)) else 0.0
+			# DOM wait always takes at least stability_period (2s) if stable, or max_wait_time (5s) if timeout
+			total_wait_time = max(network_elapsed, 2.0)  # At least 2s for DOM stability period
+			
+			self.logger.debug(
+				f'🔍 wait_for_page_stability: ✅ Page stability complete '
+				f'(network: {network_elapsed:.2f}s, DOM: {"stable" if dom_result else "timeout"}, total: {total_wait_time:.2f}s)'
+			)
+			
+		except Exception as e:
+			self.logger.warning(
+				f'🔍 wait_for_page_stability: Stability waiting failed: {e}, continuing anyway...'
+			)
+
+	@time_execution_async('wait_for_dom_stability')
+	async def _wait_for_dom_stability(self, max_wait_time: float = 5.0, stability_period: float = 2.0) -> bool:
+		"""Wait for DOM to stabilize (no mutations for stability_period seconds).
+		
+		Uses MutationObserver to detect when DOM stops changing.
+		
+		Args:
+			max_wait_time: Maximum time to wait in seconds
+			stability_period: Time period (in seconds) with no mutations to consider DOM stable
+			
+		Returns:
+			True if DOM stabilized, False if max_wait_time reached
+		"""
+		try:
+			cdp_session = await self.browser_session.get_or_create_cdp_session(focus=True)
+			
+			# JavaScript code to set up MutationObserver and wait for stability
+			js_code = f"""
+			(function() {{
+				return new Promise((resolve) => {{
+					let mutationCount = 0;
+					let lastMutationTime = Date.now();
+					let stabilityTimer = null;
+					const maxWaitMs = {int(max_wait_time * 1000)};
+					const stabilityPeriodMs = {int(stability_period * 1000)};
+					const startTime = Date.now();
+					
+					const observer = new MutationObserver((mutations) => {{
+						mutationCount += mutations.length;
+						lastMutationTime = Date.now();
+						
+						// Clear existing timer
+						if (stabilityTimer) {{
+							clearTimeout(stabilityTimer);
+						}}
+						
+						// Set new timer - if no mutations for stability_period, resolve
+						stabilityTimer = setTimeout(() => {{
+							observer.disconnect();
+							resolve({{
+								stable: true,
+								mutation_count: mutationCount,
+								elapsed_ms: Date.now() - startTime
+							}});
+						}}, stabilityPeriodMs);
+					}});
+					
+					// Start observing
+					observer.observe(document.body, {{
+						childList: true,
+						subtree: true,
+						attributes: true,
+						attributeOldValue: false,
+						characterData: true
+					}});
+					
+					// Set initial timer
+					stabilityTimer = setTimeout(() => {{
+						observer.disconnect();
+						resolve({{
+							stable: true,
+							mutation_count: mutationCount,
+							elapsed_ms: Date.now() - startTime
+						}});
+					}}, stabilityPeriodMs);
+					
+					// Max wait timeout
+					setTimeout(() => {{
+						observer.disconnect();
+						if (stabilityTimer) clearTimeout(stabilityTimer);
+						resolve({{
+							stable: false,
+							mutation_count: mutationCount,
+							elapsed_ms: maxWaitMs
+						}});
+					}}, maxWaitMs);
+				}});
+			}})()
+			"""
+			
+			result = await cdp_session.cdp_client.send.Runtime.evaluate(
+				params={'expression': js_code, 'returnByValue': True, 'awaitPromise': True},
+				session_id=cdp_session.session_id
+			)
+			
+			if result.get('result', {}).get('type') == 'object':
+				data = result['result'].get('value', {})
+				stable = data.get('stable', False)
+				mutation_count = data.get('mutation_count', 0)
+				elapsed_ms = data.get('elapsed_ms', 0)
+				
+				if stable:
+					self.logger.debug(
+						f'🔍 DOM stability: ✅ DOM stabilized after {elapsed_ms:.0f}ms '
+						f'({mutation_count} mutations observed)'
+					)
+				else:
+					self.logger.debug(
+						f'🔍 DOM stability: ⏱️  Max wait time reached ({elapsed_ms:.0f}ms). '
+						f'DOM may still be changing ({mutation_count} mutations observed)'
+					)
+				
+				return stable
+			
+			return False
+			
+		except Exception as e:
+			self.logger.debug(f'Failed to wait for DOM stability: {e}')
+			return False
+
 	@observe_debug(ignore_input=True, ignore_output=True, name='browser_state_request_event')
 	async def on_BrowserStateRequestEvent(self, event: BrowserStateRequestEvent) -> 'BrowserStateSummary':
 		"""Handle browser state request by coordinating DOM building and screenshot capture.
@@ -272,19 +492,103 @@ class DOMWatchdog(BaseWatchdog):
 					self.logger.debug(f'🔍 Found {len(pending_requests_before_wait)} pending requests before stability wait')
 			except Exception as e:
 				self.logger.debug(f'Failed to get pending requests before wait: {e}')
-		pending_requests = pending_requests_before_wait
-		# Wait for page stability using browser profile settings (main branch pattern)
+		
+		# Wait for page stability: network requests AND DOM stability (run in parallel, wait for max)
 		if not not_a_meaningful_website:
 			self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ⏳ Waiting for page stability...')
 			try:
-				if pending_requests_before_wait:
-					# Reduced from 1s to 0.3s for faster DOM builds while still allowing critical resources to load
-					await asyncio.sleep(0.3)
-				self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ Page stability complete')
+				# Run network wait and DOM stability wait in parallel
+				async def wait_for_network():
+					"""Wait for network requests to finish (up to 3 seconds)"""
+					if pending_requests_before_wait:
+						max_network_wait = 3.0
+						check_interval = 0.2
+						elapsed_time = 0.0
+						
+						while elapsed_time < max_network_wait:
+							current_pending = await self._get_pending_network_requests()
+							
+							if not current_pending:
+								self.logger.debug(
+									f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ All network requests finished '
+									f'after {elapsed_time:.2f}s'
+								)
+								return elapsed_time
+							
+							await asyncio.sleep(check_interval)
+							elapsed_time += check_interval
+						
+						final_pending = await self._get_pending_network_requests()
+						if final_pending:
+							self.logger.debug(
+								f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: ⏱️  Network wait timeout. '
+								f'Still {len(final_pending)} pending requests'
+							)
+						return elapsed_time
+					else:
+						self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: No pending requests, skipping network wait')
+						return 0.0
+				
+				async def wait_for_dom():
+					"""Wait for DOM to stabilize (no mutations for 2 seconds, max 5 seconds)"""
+					self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ⏳ Waiting for DOM stability...')
+					dom_stable = await self._wait_for_dom_stability(max_wait_time=5.0, stability_period=2.0)
+					
+					if dom_stable:
+						self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ DOM stabilized')
+					else:
+						self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ⚠️  DOM stability timeout, proceeding anyway')
+					
+					return dom_stable
+				
+				# Run both waits in parallel and wait for both to complete
+				network_task = create_task_with_error_handling(
+					wait_for_network(),
+					name='wait_for_network',
+					logger_instance=self.logger,
+					suppress_exceptions=True,
+				)
+				dom_task = create_task_with_error_handling(
+					wait_for_dom(),
+					name='wait_for_dom',
+					logger_instance=self.logger,
+					suppress_exceptions=True,
+				)
+				
+				# Wait for both to complete (they run in parallel)
+				network_time, dom_result = await asyncio.gather(network_task, dom_task, return_exceptions=True)
+				
+				# Handle exceptions
+				if isinstance(network_time, Exception):
+					self.logger.warning(f'Network wait failed: {network_time}')
+					network_time = 0.0
+				if isinstance(dom_result, Exception):
+					self.logger.warning(f'DOM wait failed: {dom_result}')
+					dom_result = False
+				
+				# Calculate total wait time (max of network and DOM wait)
+				network_elapsed = network_time if isinstance(network_time, (int, float)) else 0.0
+				# DOM wait always takes at least stability_period (2s) if stable, or max_wait_time (5s) if timeout
+				# We don't track exact DOM wait time, but we know it's at least 2s if stable
+				total_wait_time = max(network_elapsed, 2.0)  # At least 2s for DOM stability period
+				
+				self.logger.debug(
+					f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ Page stability complete '
+					f'(network: {network_elapsed:.2f}s, DOM: {"stable" if dom_result else "timeout"}, total: {total_wait_time:.2f}s)'
+				)
+				
 			except Exception as e:
 				self.logger.warning(
-					f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Network waiting failed: {e}, continuing anyway...'
+					f'🔍 DOMWatchdog.on_BrowserStateRequestEvent: Stability waiting failed: {e}, continuing anyway...'
 				)
+		
+		# Get final pending requests for the summary
+		pending_requests = []
+		if not not_a_meaningful_website:
+			try:
+				pending_requests = await self._get_pending_network_requests()
+			except Exception as e:
+				self.logger.debug(f'Failed to get final pending requests: {e}')
 
 		# Get tabs info once at the beginning for all paths
 		self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: Getting tabs info...')

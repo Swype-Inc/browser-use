@@ -90,6 +90,7 @@ class AgentMessagePrompt:
 		sample_images: list[ContentPartTextParam | ContentPartImageParam] | None = None,
 		read_state_images: list[dict] | None = None,
 		llm_screenshot_size: tuple[int, int] | None = None,
+		plan: str | None = None,
 	):
 		self.browser_state: 'BrowserStateSummary' = browser_state_summary
 		self.file_system: 'FileSystem | None' = file_system
@@ -108,6 +109,7 @@ class AgentMessagePrompt:
 		self.sample_images = sample_images or []
 		self.read_state_images = read_state_images or []
 		self.llm_screenshot_size = llm_screenshot_size
+		self.plan = plan
 		assert self.browser_state
 
 	def _extract_page_statistics(self) -> dict[str, int]:
@@ -310,6 +312,8 @@ Available tabs:
 {_todo_contents}
 </todo_contents>
 """
+		if self.plan:
+			agent_state += f'<plan>\n{self.plan}\n</plan>\n'
 		if self.sensitive_data:
 			agent_state += f'<sensitive_data>{self.sensitive_data}</sensitive_data>\n'
 
