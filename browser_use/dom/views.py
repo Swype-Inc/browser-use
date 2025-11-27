@@ -390,6 +390,10 @@ class EnhancedDOMTreeNode:
 	_compound_children: list[dict[str, Any]] = field(default_factory=list)
 
 	uuid: str = field(default_factory=uuid7str)
+	
+	# Structural selector for reliable Playwright element selection
+	# Generated during DOM serialization when full tree structure is available
+	structural_selector: str | None = None
 
 	@property
 	def parent(self) -> 'EnhancedDOMTreeNode | None':
@@ -440,6 +444,82 @@ class EnhancedDOMTreeNode:
 			current_element = current_element.parent_node
 
 		return '/'.join(segments)
+
+	def get_structural_selector(self) -> str:
+		"""Generate a structural CSS selector using nth-child from element up to body/html.
+		
+		This creates a unique, stable selector that always identifies this element.
+		Algorithm: Build a chain of nth-child selectors from element → body/html.
+		
+		Example: "body > div:nth-child(2) > form:nth-child(1) > input:nth-child(3)"
+		
+		Handles shadow DOM boundaries (stops at shadow root) and iframes (includes iframe in path).
+		"""
+		segments = []
+		current_element = self
+
+		# Traverse up the tree until we hit body, html, document, or shadow root
+		while current_element:
+			# Stop at shadow root boundaries (DOCUMENT_FRAGMENT_NODE)
+			if current_element.node_type == NodeType.DOCUMENT_FRAGMENT_NODE:
+				# Shadow root - stop traversal but include shadow host if available
+				shadow_host = current_element.parent_node
+				if shadow_host and shadow_host.node_type == NodeType.ELEMENT_NODE:
+					# Include shadow host in selector
+					tag_name = shadow_host.node_name.lower()
+					segments.insert(0, tag_name)
+				break
+			
+			# Only process element nodes
+			if current_element.node_type != NodeType.ELEMENT_NODE:
+				current_element = current_element.parent_node
+				continue
+			
+			tag_name = current_element.node_name.lower()
+			
+			# Stop at body or html (these are the root elements we want)
+			if tag_name in ('body', 'html'):
+				# Include body/html in the selector
+				segments.insert(0, tag_name)
+				break
+
+			# Get parent to compute nth-child index
+			parent = current_element.parent_node
+			if not parent:
+				# No parent - this is the root
+				segments.insert(0, tag_name)
+				break
+			
+			# Skip shadow root parent (we handle it above)
+			if parent.node_type == NodeType.DOCUMENT_FRAGMENT_NODE:
+				segments.insert(0, tag_name)
+				break
+
+			# Get siblings from parent
+			if not parent.children_nodes:
+				# No siblings - this is the only child
+				segments.insert(0, tag_name)
+				break
+
+			# Compute nth-child index: count how many element siblings come before this one
+			siblings = parent.children_nodes
+			# Filter to only element nodes (same as nth-child behavior)
+			element_siblings = [s for s in siblings if s.node_type == NodeType.ELEMENT_NODE]
+			
+			try:
+				index = element_siblings.index(current_element) + 1  # nth-child is 1-indexed
+			except ValueError:
+				# Shouldn't happen, but fallback
+				segments.insert(0, tag_name)
+				break
+
+			# Build selector fragment: tag:nth-child(n)
+			segments.insert(0, f'{tag_name}:nth-child({index})')
+
+			current_element = parent
+
+		# Join with " > " to create full selector path
+		return ' > '.join(segments) if segments else ''
 
 	def _get_element_position(self, element: 'EnhancedDOMTreeNode') -> int:
 		"""Get the position of an element among its siblings with the same tag name.

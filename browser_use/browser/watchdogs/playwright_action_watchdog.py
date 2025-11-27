@@ -100,10 +100,10 @@ class PlaywrightThread:
 					# Force stop if thread didn't stop gracefully
 					self.loop = None
 	
-	def run_coro(self, coro, timeout: float = 60.0):
-		"""Run a coroutine in the Playwright thread and return the result.
+	async def run_coro(self, coro, timeout: float = 60.0):
+		"""Run a coroutine in the Playwright thread and await the result (non-blocking for event loop).
 		
-		This blocks the calling thread until the coroutine completes.
+		This yields control to the event loop while waiting, preventing blocking of the bubus event loop.
 		
 		Args:
 			coro: Coroutine to run
@@ -116,8 +116,10 @@ class PlaywrightThread:
 		
 		future = asyncio.run_coroutine_threadsafe(coro, self.loop)
 		try:
-			return future.result(timeout=timeout)  # This blocks until the coroutine completes
-		except TimeoutError:
+			# Use wrap_future to await the Future in the current event loop
+			# This yields control and doesn't block the event loop
+			return await asyncio.wait_for(asyncio.wrap_future(future), timeout=timeout)
+		except asyncio.TimeoutError:
 			future.cancel()
 			raise RuntimeError(f"Playwright operation timed out after {timeout}s")
 	
@@ -209,17 +211,17 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 				thread._initialized = True
 				self.logger.debug('✅ Connected Playwright to browser session in dedicated thread')
 			except Exception as e:
-				self.logger.error(f'Error in Playwright initialization coroutine: {e}', exc_info=True)
+				self.logger.error(f'\033[91mError in Playwright initialization coroutine: {e}\033[0m', exc_info=True)
 				raise
 		
 		# Dispatch initialization to Playwright thread
 		try:
-			thread.run_coro(init_coro())
+			await thread.run_coro(init_coro())
 			self._playwright_initialized = True
 		except ImportError:
 			raise RuntimeError('Playwright not installed. Install with: pip install playwright && playwright install chromium')
 		except Exception as e:
-			self.logger.error(f'Failed to connect Playwright: {e}')
+			self.logger.error(f'\033[91mFailed to connect Playwright: {e}\033[0m')
 			raise
 	
 	async def _map_existing_pages_in_thread(
@@ -313,8 +315,8 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			# Fallback: if we still can't find it, raise an error
 			available_ids = [tid[-8:] for tid in thread._target_id_to_page.keys()]
 			self.logger.error(
-				f'❌ Playwright page not found for target_id={current_target_id[-8:]}. '
-				f'Available mapped pages: {available_ids}'
+				f'\033[91m❌ Playwright page not found for target_id={current_target_id[-8:]}. '
+				f'Available mapped pages: {available_ids}\033[0m'
 			)
 			raise RuntimeError(
 				f'Playwright page not found for target_id {current_target_id[-8:]}. '
@@ -322,7 +324,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			)
 		
 		# Dispatch to Playwright thread
-		return thread.run_coro(get_page_coro())
+		return await thread.run_coro(get_page_coro())
 	
 	async def _map_pages_from_bubus_thread(self, thread: PlaywrightThread) -> None:
 		"""Map Playwright pages to CDP target IDs (runs in bubus thread to avoid deadlock).
@@ -349,7 +351,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 				return context.pages
 			
 			# Get pages from Playwright thread
-			pages = thread.run_coro(get_pages_coro())
+			pages = await thread.run_coro(get_pages_coro())
 			
 			if not pages:
 				self.logger.debug('No Playwright pages found to map')
@@ -375,7 +377,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 							break
 			
 			# Store mapping in Playwright thread
-			thread.run_coro(store_mapping_coro())
+			await thread.run_coro(store_mapping_coro())
 			
 		except Exception as e:
 			self.logger.warning(f'Failed to map pages: {e}')
@@ -481,20 +483,25 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			raise RuntimeError('Failed to get CDP target ID for Playwright-created page')
 		
 		# Dispatch to Playwright thread
-		return thread.run_coro(create_page_coro())
+		return await thread.run_coro(create_page_coro())
 
 	def _element_node_to_playwright_selector(self, element_node: EnhancedDOMTreeNode) -> str:
-		"""Convert element_node to a Playwright selector (prefer XPath)."""
-		# Use XPath if available (most reliable)
-		if hasattr(element_node, 'xpath') and element_node.xpath:
-			return f'xpath={element_node.xpath}'
-		
-		# Fallback: try to build a CSS selector from attributes
+		"""Convert element_node to a Playwright selector (prefer structural selector over other methods)."""
 		attrs = element_node.attributes or {}
 		
-		# Prefer ID selector
+		# FIRST: Use pre-computed structural selector if available (most reliable!)
+		# This was generated during DOM serialization when we had full tree structure
+		if element_node.structural_selector:
+			return element_node.structural_selector
+		
+		# Fallback: Prioritize most specific selectors (ID, data-automation-id, etc.)
+		# Prefer ID selector (most specific)
 		if attrs.get('id'):
 			return f'#{attrs["id"]}'
+		
+		# Use data-automation-id (common in Workday and similar apps)
+		if attrs.get('data-automation-id'):
+			return f'[data-automation-id="{attrs["data-automation-id"]}"]'
 		
 		# Use name attribute
 		if attrs.get('name'):
@@ -504,6 +511,22 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 		for attr in ['data-testid', 'data-test', 'data-cy']:
 			if attrs.get(attr):
 				return f'[{attr}="{attrs[attr]}"]'
+		
+		# Try to generate structural selector on-the-fly (fallback if not pre-computed)
+		try:
+			structural_selector = element_node.get_structural_selector()
+			if structural_selector:
+				return structural_selector
+		except Exception:
+			pass  # Fall through to other methods
+		
+		# Use XPath only if it's specific enough (not just a tag name)
+		if hasattr(element_node, 'xpath') and element_node.xpath:
+			xpath = element_node.xpath
+			# If xpath is just a tag name (like "a" or "input"), it's too generic
+			# Only use it if it has path segments (contains "/") or indices (contains "[")
+			if '/' in xpath or '[' in xpath:
+				return f'xpath={xpath}'
 		
 		# Fallback to tag + role
 		tag = element_node.tag_name or 'div'
@@ -635,7 +658,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			# Check if session is alive before attempting any operations
 			if not self.browser_session.agent_focus_target_id:
 				error_msg = 'Cannot execute click: browser session is corrupted (target_id=None). Session may have crashed.'
-				self.logger.error(f'{error_msg}')
+				self.logger.error(f'\033[91m{error_msg}\033[0m')
 				raise BrowserError(error_msg)
 
 			# Use the provided node
@@ -697,7 +720,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			# Check if session is alive before attempting any operations
 			if not self.browser_session.agent_focus_target_id:
 				error_msg = 'Cannot execute click: browser session is corrupted (target_id=None). Session may have crashed.'
-				self.logger.error(f'{error_msg}')
+				self.logger.error(f'\033[91m{error_msg}\033[0m')
 				raise BrowserError(error_msg)
 
 			# If force=True, skip safety checks and click directly
@@ -763,7 +786,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 				async def type_page_coro():
 					await page.keyboard.type(event.text, delay=18)
 				
-				thread.run_coro(type_page_coro())
+				await thread.run_coro(type_page_coro())
 				# Log with sensitive data protection
 				if event.is_sensitive:
 					if event.sensitive_key_name:
@@ -801,7 +824,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 					async def type_page_fallback_coro():
 						await page.keyboard.type(event.text, delay=18)
 					
-					thread.run_coro(type_page_fallback_coro())
+					await thread.run_coro(type_page_fallback_coro())
 					# Log with sensitive data protection
 					if event.is_sensitive:
 						if event.sensitive_key_name:
@@ -852,7 +875,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 						# Scroll the element's container
 						await locator.evaluate(f'element => element.scrollBy(0, {pixels})')
 					
-					thread.run_coro(scroll_element_coro())
+					await thread.run_coro(scroll_element_coro())
 					
 					self.logger.debug(
 						f'📜 Scrolled element {index_for_logging} container {event.direction} by {event.amount} pixels'
@@ -880,7 +903,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 			async def scroll_page_coro():
 				await page.evaluate(f'window.scrollBy(0, {pixels})')
 			
-			thread.run_coro(scroll_page_coro())
+			await thread.run_coro(scroll_page_coro())
 			
 			self.logger.debug(f'📜 Scrolled {event.direction} by {event.amount} pixels')
 			return None
@@ -971,7 +994,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 					return box
 				
 				# Dispatch click operation to Playwright thread
-				box = thread.run_coro(click_coro())
+				box = await thread.run_coro(click_coro())
 				
 				# Return coordinates as metadata
 				if box:
@@ -1048,13 +1071,13 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 				self.logger.debug(f'🖱️ Clicked successfully at ({coordinate_x}, {coordinate_y})')
 			
 			# Dispatch to Playwright thread
-			thread.run_coro(click_coord_coro())
+			await thread.run_coro(click_coord_coro())
 			
 			# Return coordinates as metadata
 			return {'click_x': coordinate_x, 'click_y': coordinate_y}
 
 		except Exception as e:
-			self.logger.error(f'Failed to click at coordinates ({coordinate_x}, {coordinate_y}): {type(e).__name__}: {e}')
+			self.logger.error(f'\033[91mFailed to click at coordinates ({coordinate_x}, {coordinate_y}): {type(e).__name__}: {e}\033[0m')
 			raise BrowserError(
 				message=f'Failed to click at coordinates: {e}',
 				long_term_memory=f'Failed to click at coordinates ({coordinate_x}, {coordinate_y}). The coordinates may be outside viewport or the page may have changed.',
@@ -1110,13 +1133,13 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 				return box
 			
 			# Dispatch to Playwright thread
-			box = thread.run_coro(type_coro())
+			box = await thread.run_coro(type_coro())
 			if box:
 				return {'input_x': box['x'], 'input_y': box['y']}
 			return None
 
 		except Exception as e:
-			self.logger.error(f'Failed to input text via Playwright: {type(e).__name__}: {e}')
+			self.logger.error(f'\033[91mFailed to input text via Playwright: {type(e).__name__}: {e}\033[0m')
 			raise BrowserError(f'Failed to input text into element: {repr(element_node)}')
 
 	def _requires_direct_value_assignment(self, element_node: EnhancedDOMTreeNode) -> bool:
@@ -1320,7 +1343,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 						else:
 							raise
 			
-			thread.run_coro(select_dropdown_coro())
+			await thread.run_coro(select_dropdown_coro())
 
 			msg = f'Selected "{target_text}" in dropdown at index {index_for_logging}'
 			self.logger.debug(f'{msg}')
@@ -1502,7 +1525,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 					await page.keyboard.type(normalized_keys, delay=18)
 		
 		# Dispatch to Playwright thread
-		thread.run_coro(send_keys_coro())
+		await thread.run_coro(send_keys_coro())
 
 		self.logger.info(f'⌨️ Sent keys: {event.keys}')
 
@@ -1556,7 +1579,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 				await locator.wait_for(state='visible', timeout=5000)
 				await locator.set_input_files(event.file_path)
 			
-			thread.run_coro(upload_file_coro())
+			await thread.run_coro(upload_file_coro())
 
 			self.logger.info(f'📎 Uploaded file {event.file_path} to element {index_for_logging}')
 		except Exception as e:
@@ -1575,7 +1598,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 				await locator.scroll_into_view_if_needed(timeout=5000)
 			
 			# Dispatch to Playwright thread
-			thread.run_coro(scroll_to_text_coro())
+			await thread.run_coro(scroll_to_text_coro())
 			self.logger.debug(f'📜 Scrolled to text: "{event.text}"')
 		except Exception as e:
 			# Fallback to CDP if Playwright fails

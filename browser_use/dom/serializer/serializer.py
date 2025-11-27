@@ -639,6 +639,11 @@ class DOMTreeSerializer:
 			if should_make_interactive:
 				# Mark node as interactive
 				node.is_interactive = True
+				# Generate and store structural selector for reliable Playwright selection
+				# This is computed once during DOM serialization when we have full tree structure
+				structural_selector = node.original_node.get_structural_selector()
+				# Store selector on the node for later use by Playwright
+				node.original_node.structural_selector = structural_selector
 				# Store backend_node_id in selector map (model outputs backend_node_id)
 				self._selector_map[node.original_node.backend_node_id] = node.original_node
 				self._interactive_counter += 1
