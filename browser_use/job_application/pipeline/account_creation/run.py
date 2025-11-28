@@ -15,9 +15,9 @@ from browser_use.job_application.pipeline.navigation.run import (
 	plan_navigation,
 	prepare_navigation_context,
 )
-from browser_use.job_application.pipeline.page_classification.run import classify_page
+from browser_use.job_application.pipeline.page_classification.run import run as classify_page
 from browser_use.job_application.pipeline.shared.enums import PageType
-from browser_use.job_application.pipeline.shared.utils import format_browser_state_message
+from browser_use.job_application.pipeline.shared.utils import debug_input, format_browser_state_message
 from browser_use.job_application.pipeline.state import PipelineState
 from browser_use.llm.base import BaseChatModel
 from browser_use.llm.messages import UserMessage
@@ -133,7 +133,7 @@ Return your plan with rationale explaining your reasoning."""
 		response = await llm.ainvoke(messages, output_format=PlanOutput)
 		plan_output = response.completion
 		logger.info(f'📋 Account Creation Plan: {plan_output.plan}')
-		input('[DEBUG] Press Enter to continue after account creation planning...')
+		debug_input('[DEBUG] Press Enter to continue after account creation planning...')
 		return plan_output.plan
 	except Exception as e:
 		logger.warning(f'Planning failed: {e}. Continuing without plan.')
@@ -215,14 +215,14 @@ Return your selected actions."""
 		agent_output = response.completion
 		actions = agent_output.action
 		logger.info(f'⚡ Selected {len(actions)} account creation action(s)')
-		input(f'[DEBUG] Press Enter to continue after account creation action selection ({len(actions)} actions)...')
+		debug_input(f'[DEBUG] Press Enter to continue after account creation action selection ({len(actions)} actions)...')
 		return actions
 	except Exception as e:
 		logger.error(f'Failed to get account creation actions: {e}')
 		raise
 
 
-async def handle_account_creation(
+async def run(
 	browser_session: BrowserSession,
 	llm: BaseChatModel,
 	tools: Tools,

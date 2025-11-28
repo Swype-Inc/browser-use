@@ -35,6 +35,7 @@ You are identifying the next application section that needs to be filled.
 
 <important>
 - Only identify sections that are currently visible on the page
+- You absolutely must go in sequential order. You are looking for the very next section in the application that is not already listed in previous sections. 
 - Skip sections and questions that are already in previous_sections - you must find the NEXT section with questions that haven't been identified yet
 - If there are no more sections to identify on this page (all sections are complete, or you've reached the end of the form), set no_more_sections=True and return null/empty values for other fields
 - Include ALL question texts you can identify in the section - this is critical for the next parsing step

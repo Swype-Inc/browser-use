@@ -8,7 +8,7 @@ from browser_use.browser import BrowserSession
 from browser_use.browser.views import BrowserStateSummary
 from browser_use.job_application.pipeline.page_classification.schema import PageClassificationOutput
 from browser_use.job_application.pipeline.shared.enums import PageType
-from browser_use.job_application.pipeline.shared.utils import format_browser_state_message
+from browser_use.job_application.pipeline.shared.utils import debug_input, format_browser_state_message
 from browser_use.llm.base import BaseChatModel
 from browser_use.llm.messages import UserMessage
 from browser_use.observability import observe_debug
@@ -31,7 +31,7 @@ def _load_prompt() -> str:
 
 
 @observe_debug(ignore_input=True, name='classify_page')
-async def classify_page(
+async def run(
 	browser_session: BrowserSession,
 	llm: BaseChatModel,
 ) -> PageType:
@@ -63,6 +63,6 @@ async def classify_page(
 	logger.info(
 		f'Page classified as: {classification.page_type.value} (confidence: {classification.confidence:.2f})'
 	)
-	input('[DEBUG] Press Enter to continue after page classification...')
+	debug_input('[DEBUG] Press Enter to continue after page classification...')
 	return classification.page_type
 

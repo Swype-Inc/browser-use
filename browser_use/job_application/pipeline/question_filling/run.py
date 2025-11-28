@@ -10,9 +10,9 @@ from browser_use.browser.views import BrowserStateSummary
 from browser_use.job_application.pipeline.question_extraction.schema import ApplicationQuestion
 from browser_use.job_application.pipeline.question_filling.schema import FillResult, QuestionFillAssessment
 from browser_use.job_application.pipeline.shared.schemas import QuestionAnswer
-from browser_use.job_application.pipeline.shared.utils import format_browser_state_message
+from browser_use.job_application.pipeline.shared.utils import debug_input, format_browser_state_message
 from browser_use.llm.base import BaseChatModel
-from browser_use.llm.messages import UserMessage
+from browser_use.llm.messages import ContentPartImageParam, ContentPartTextParam, ImageURL, UserMessage
 from browser_use.tools.registry.views import ActionModel
 from browser_use.tools.service import Tools
 from browser_use.agent.views import AgentOutput, ActionResult
@@ -147,7 +147,7 @@ Return your selected actions."""
 		agent_output = response.completion
 		actions = agent_output.action
 		logger.info(f'⚡ Selected {len(actions)} action(s) for question fill')
-		input(f'[DEBUG] Press Enter to continue after question fill action selection ({len(actions)} actions) for: "{question.question_text[:50]}..."...')
+		debug_input(f'[DEBUG] Press Enter to continue after question fill action selection ({len(actions)} actions) for: "{question.question_text[:50]}..."...')
 		return actions
 	except Exception as e:
 		logger.error(f'Failed to get question fill actions: {e}')
@@ -183,7 +183,20 @@ async def is_question_filled(
 	
 	# Combine prompt and browser state
 	assessment_content = f"{prompt_text}\n\n<browser_state>\n{browser_state_text}\n</browser_state>"
-	messages = [UserMessage(content=assessment_content)]
+	
+	# Create message with screenshot if available
+	if browser_state.screenshot:
+		messages = [UserMessage(
+			content=[
+				ContentPartTextParam(type="text", text=assessment_content),
+				ContentPartImageParam(
+					type="image_url",
+					image_url=ImageURL(url=f'data:image/png;base64,{browser_state.screenshot}')
+				)
+			]
+		)]
+	else:
+		messages = [UserMessage(content=assessment_content)]
 	
 	try:
 		response = await llm.ainvoke(messages, output_format=QuestionFillAssessment)
@@ -245,7 +258,7 @@ async def execute_actions(
 	return results
 
 
-async def fill_answer(
+async def run(
 	browser_session: BrowserSession,
 	llm: BaseChatModel,
 	tools: Tools,
@@ -273,7 +286,10 @@ async def fill_answer(
 			logger.info(f'🔄 Fill attempt {attempt}/{max_attempts} for question: "{question.question_text}"')
 			
 			# 1. Read browser state
-			browser_state = await browser_session.get_browser_state_summary(include_all_form_fields=True)
+			browser_state = await browser_session.get_browser_state_summary(
+				include_all_form_fields=True,
+				include_screenshot=True
+			)
 			
 			# 2. Check if already filled
 			filled = await is_question_filled(browser_session, llm, browser_state, question, answer)
@@ -305,7 +321,10 @@ async def fill_answer(
 			await browser_session._dom_watchdog.wait_for_page_stability()
 			
 			# 7. Reassess if filled (read browser state again)
-			browser_state = await browser_session.get_browser_state_summary(include_all_form_fields=True)
+			browser_state = await browser_session.get_browser_state_summary(
+				include_all_form_fields=True,
+				include_screenshot=True
+			)
 			filled = await is_question_filled(browser_session, llm, browser_state, question, answer)
 			
 			if filled:

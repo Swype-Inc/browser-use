@@ -9,7 +9,7 @@ from browser_use.browser.views import BrowserStateSummary
 from browser_use.job_application.pipeline.section_identification.schema import SectionIdentificationOutput
 from browser_use.job_application.pipeline.shared.enums import SectionType
 from browser_use.job_application.pipeline.shared.schemas import ApplicationSection
-from browser_use.job_application.pipeline.shared.utils import format_browser_state_message
+from browser_use.job_application.pipeline.shared.utils import debug_input, format_browser_state_message
 from browser_use.job_application.pipeline.state import PipelineState
 from browser_use.llm.base import BaseChatModel
 from browser_use.llm.messages import UserMessage
@@ -65,7 +65,7 @@ def _build_prompt(pipeline_state: PipelineState) -> str:
 
 
 @observe_debug(ignore_input=True, name='identify_next_section')
-async def identify_next_section(
+async def run(
 	browser_session: BrowserSession,
 	llm: BaseChatModel,
 	pipeline_state: PipelineState,
@@ -117,7 +117,7 @@ async def identify_next_section(
 			element_indices=section_output.element_indices,
 		)
 		
-		input(f'[DEBUG] Press Enter to continue after section identification: {section.name or section.section_type.value}...')
+		debug_input(f'[DEBUG] Press Enter to continue after section identification: {section.name or section.section_type.value}...')
 		return section, section_output.question_texts
 	except Exception as e:
 		logger.error(f'Failed to identify section: {e}')

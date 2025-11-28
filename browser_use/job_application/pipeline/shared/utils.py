@@ -2,6 +2,22 @@
 
 from browser_use.browser.views import BrowserStateSummary
 
+# ANSI color codes
+GREEN = '\033[92m'
+RESET = '\033[0m'
+
+
+def debug_input(prompt: str) -> str:
+	"""Print a colored debug prompt and wait for user input.
+	
+	Args:
+		prompt: The debug message to display
+		
+	Returns:
+		User input string
+	"""
+	return input(f'{GREEN}{prompt}{RESET}')
+
 
 def format_browser_state_message(browser_state: BrowserStateSummary) -> str:
 	"""Format browser state using the same logic as AgentMessagePrompt.

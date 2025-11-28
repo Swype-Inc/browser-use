@@ -3,12 +3,12 @@
 from browser_use.job_application.pipeline.account_creation.run import (
 	check_account_creation_complete,
 	get_account_creation_actions,
-	handle_account_creation,
 	plan_account_creation,
+	run,
 )
 
 __all__ = [
-	'handle_account_creation',
+	'run',
 	'plan_account_creation',
 	'get_account_creation_actions',
 	'check_account_creation_complete',

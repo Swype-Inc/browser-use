@@ -4,13 +4,13 @@ import logging
 from typing import TYPE_CHECKING, List, Optional
 
 from browser_use.browser import BrowserSession
-from browser_use.job_application.pipeline.account_creation.run import handle_account_creation
-from browser_use.job_application.pipeline.answer_generation.run import generate_answer
-from browser_use.job_application.pipeline.navigation.run import navigate_to_application, navigate_to_next_page
-from browser_use.job_application.pipeline.page_classification.run import classify_page
-from browser_use.job_application.pipeline.question_extraction.run import identify_questions_in_section
-from browser_use.job_application.pipeline.question_filling.run import fill_answer
-from browser_use.job_application.pipeline.section_identification.run import identify_next_section
+from browser_use.job_application.pipeline.account_creation import run as handle_account_creation
+from browser_use.job_application.pipeline.answer_generation import run as generate_answer
+from browser_use.job_application.pipeline.navigation import navigate_to_next_page, run as navigate_to_application
+from browser_use.job_application.pipeline.page_classification import run as classify_page
+from browser_use.job_application.pipeline.question_extraction import run as identify_questions_in_section
+from browser_use.job_application.pipeline.question_filling import run as fill_answer
+from browser_use.job_application.pipeline.section_identification import run as identify_next_section
 from browser_use.job_application.pipeline.shared.enums import PageType
 from browser_use.job_application.pipeline.shared.schemas import (
 	ApplicationQuestion,

@@ -8,7 +8,7 @@ from browser_use.browser import BrowserSession
 from browser_use.browser.views import BrowserStateSummary
 from browser_use.job_application.pipeline.question_extraction.schema import ApplicationQuestion
 from browser_use.job_application.pipeline.shared.schemas import ApplicationSection
-from browser_use.job_application.pipeline.shared.utils import format_browser_state_message
+from browser_use.job_application.pipeline.shared.utils import debug_input, format_browser_state_message
 from browser_use.llm.base import BaseChatModel
 from browser_use.llm.messages import UserMessage
 from browser_use.observability import observe_debug
@@ -62,7 +62,7 @@ def _build_prompt(section: ApplicationSection, question_texts: Optional[List[str
 
 
 @observe_debug(ignore_input=True, name='identify_questions')
-async def identify_questions_in_section(
+async def run(
 	browser_session: BrowserSession,
 	llm: BaseChatModel,
 	section: ApplicationSection,
@@ -105,7 +105,7 @@ async def identify_questions_in_section(
 	try:
 		response = await llm.ainvoke(messages, output_format=QuestionsListOutput)
 		questions = response.completion.questions
-		input(f'[DEBUG] Press Enter to continue after question extraction ({len(questions)} questions found)...')
+		debug_input(f'[DEBUG] Press Enter to continue after question extraction ({len(questions)} questions found)...')
 		return questions
 	except Exception as e:
 		logger.error(f'Failed to identify questions: {e}')

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 from browser_use.job_application.pipeline.answer_generation.schema import AnswerGenerationOutput
 from browser_use.job_application.pipeline.question_extraction.schema import ApplicationQuestion
 from browser_use.job_application.pipeline.shared.schemas import QuestionAnswer
+from browser_use.job_application.pipeline.shared.utils import debug_input
 from browser_use.job_application.websocket.client import AnswerGeneratorClient
 from browser_use.llm.base import BaseChatModel
 from browser_use.llm.messages import UserMessage
@@ -67,7 +68,7 @@ def _build_prompt(question: ApplicationQuestion, user_profile: dict) -> str:
 	)
 
 
-async def generate_answer(
+async def run(
 	question: ApplicationQuestion,
 	llm: BaseChatModel,
 	user_profile: dict,
@@ -104,7 +105,7 @@ async def generate_answer(
 		response = await llm.ainvoke(messages, output_format=AnswerGenerationOutput)
 		answer_output = response.completion
 		
-		input(f'[DEBUG] Press Enter to continue after answer generation for: "{question.question_text[:50]}..."...')
+		debug_input(f'[DEBUG] Press Enter to continue after answer generation for: "{question.question_text[:50]}..."...')
 		
 		# Convert to QuestionAnswer
 		return QuestionAnswer(

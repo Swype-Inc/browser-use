@@ -754,6 +754,142 @@ class DomService:
 
 		return enhanced_dom_tree_node, timing_info
 
+	async def _enrich_input_values_with_cdp(
+		self,
+		enhanced_dom_tree: EnhancedDOMTreeNode,
+		target_id: TargetID,
+	) -> None:
+		"""
+		Enrich input/textarea/select elements with actual JavaScript values via CDP.
+		
+		This handles cases where JavaScript libraries (like intl-tel-input) manage
+		values in JS state rather than HTML attributes. The AX tree may also not
+		expose these values properly.
+		
+		Args:
+			enhanced_dom_tree: Root of the enhanced DOM tree to enrich
+			target_id: Target ID for CDP session creation
+		"""
+		# Collect all inputs that need value fetching
+		inputs_to_fetch: list[tuple[int, TargetID, EnhancedDOMTreeNode]] = []
+		
+		def collect_inputs(node: EnhancedDOMTreeNode) -> None:
+			"""Recursively collect input elements that need value fetching."""
+			if node.node_type == NodeType.ELEMENT_NODE:
+				tag = node.tag_name.lower() if node.tag_name else ''
+				if tag in ['input', 'textarea', 'select']:
+					# Check if we need to fetch value
+					html_value = node.attributes.get('value', '') if node.attributes else ''
+					ax_value = None
+					
+					# Check AX tree for value
+					if node.ax_node and node.ax_node.properties:
+						for prop in node.ax_node.properties:
+							if prop.name == 'valuetext' and prop.value:
+								ax_value = str(prop.value).strip()
+								break
+							elif prop.name == 'value' and prop.value:
+								ax_value = str(prop.value).strip()
+								break
+					
+					# If HTML value is empty and AX value is missing or empty, fetch via CDP
+					# This handles cases where AX tree reports empty string instead of None
+					# or where JS-managed inputs (like intl-tel-input) don't update HTML/AX
+					if not html_value and (ax_value is None or ax_value == ''):
+						# Use the node's target_id (handles frames correctly)
+						node_target_id = node.target_id or target_id
+						inputs_to_fetch.append((node.backend_node_id, node_target_id, node))
+						# Debug logging
+						input_id = node.attributes.get('id', '') if node.attributes else ''
+						self.logger.debug(
+							f'Will fetch value for input backend_node_id={node.backend_node_id} '
+							f'id={input_id} tag={tag} html_value="{html_value}" ax_value="{ax_value}"'
+						)
+			
+			# Recurse into children
+			if node.children_nodes:
+				for child in node.children_nodes:
+					collect_inputs(child)
+			if node.shadow_roots:
+				for shadow_root in node.shadow_roots:
+					collect_inputs(shadow_root)
+			if node.content_document:
+				collect_inputs(node.content_document)
+		
+		collect_inputs(enhanced_dom_tree)
+		
+		self.logger.debug(f'Found {len(inputs_to_fetch)} inputs to enrich with CDP values')
+		
+		if not inputs_to_fetch:
+			return  # Nothing to fetch
+		
+		# Group by target_id (each frame needs its own CDP session)
+		inputs_by_target: dict[TargetID, list[tuple[int, EnhancedDOMTreeNode]]] = {}
+		for backend_node_id, node_target_id, node in inputs_to_fetch:
+			if node_target_id not in inputs_by_target:
+				inputs_by_target[node_target_id] = []
+			inputs_by_target[node_target_id].append((backend_node_id, node))
+		
+		# Fetch values for each target/frame
+		for node_target_id, inputs in inputs_by_target.items():
+			try:
+				cdp_session = await self.browser_session.get_or_create_cdp_session(
+					target_id=node_target_id, focus=False
+				)
+				
+				# Fetch value for each input element
+				for backend_node_id, node in inputs:
+					try:
+						# Get objectId for this node using DOM.describeNode
+						describe_result = await cdp_session.cdp_client.send.DOM.describeNode(
+							params={'backendNodeId': backend_node_id},
+							session_id=cdp_session.session_id,
+						)
+						
+						if describe_result and 'node' in describe_result:
+							node_info = describe_result['node']
+							if 'objectId' in node_info:
+								object_id = node_info['objectId']
+								
+								# Get the .value property using Runtime.callFunctionOn
+								value_result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+									params={
+										'objectId': object_id,
+										'functionDeclaration': 'function() { return this.value || ""; }',
+										'returnByValue': True,
+									},
+									session_id=cdp_session.session_id,
+								)
+								
+								if (
+									value_result
+									and 'result' in value_result
+									and 'value' in value_result['result']
+								):
+									fetched_value = value_result['result']['value']
+									if fetched_value:
+										# Update node's attributes dict
+										if node.attributes is None:
+											node.attributes = {}
+										node.attributes['value'] = str(fetched_value)
+										input_id = node.attributes.get('id', '') if node.attributes else ''
+										self.logger.debug(
+											f'Enriched input value for backend_node_id={backend_node_id} '
+											f'id={input_id}: {fetched_value[:50]}...'
+										)
+					except Exception as e:
+						self.logger.debug(
+							f'Failed to fetch value for backend_node_id={backend_node_id} '
+							f'in target={node_target_id}: {e}'
+						)
+						continue
+			except Exception as e:
+				self.logger.debug(
+					f'Failed to create CDP session for target={node_target_id} '
+					f'to enrich input values: {e}'
+				)
+				continue
+
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_serialized_dom_tree')
 	async def get_serialized_dom_tree(
 		self, 
@@ -782,6 +918,14 @@ class DomService:
 
 		# Add sub-timings from DOM tree construction
 		timing_info.update(dom_tree_timing)
+
+		# Enrich input values with CDP (for JS-managed form fields like intl-tel-input)
+		start_enrich = time.time()
+		await self._enrich_input_values_with_cdp(
+			enhanced_dom_tree,
+			self.browser_session.agent_focus_target_id,
+		)
+		timing_info['enrich_input_values_ms'] = (time.time() - start_enrich) * 1000
 
 		# Serialize DOM tree for LLM
 		start_serialize = time.time()
