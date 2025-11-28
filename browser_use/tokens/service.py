@@ -369,11 +369,8 @@ class TokenCost:
 				output_str = str(result.completion.model_dump())
 			else:
 				output_str = str(result.completion)
-			
-			if len(output_str) > 5000:
-				logger.info(f'{GRAY}{output_str[:5000]}...\n[Truncated - {len(output_str)} total chars]{RESET}')
-			else:
-				logger.info(f'{GRAY}{output_str}{RESET}')
+
+			logger.info(f'{GRAY}{output_str}{RESET}')
 			logger.info(f'{GRAY}{"=" * 80}{RESET}\n')
 
 			# Track usage if available (no await needed since add_usage is now sync)

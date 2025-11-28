@@ -2,13 +2,13 @@ You are identifying the next application section that needs to be filled.
 
 <section_types>
 
+- PERSONAL_INFO: Personal information (name, address, contact info)
+- PHONE: Phone number section
 - EDUCATION: Education history section
 - WORK_EXPERIENCE: Work experience/employment history section
-- PERSONAL_INFO: Personal information (name, address, contact info)
-- DEMOGRAPHICS: Demographic information (race, gender, veteran status, etc.)
 - LANGUAGE: Language skills section
 - PROJECT: Projects/portfolio section
-- PHONE: Phone number section
+- DEMOGRAPHICS: Demographic information (race, gender, veteran status, etc.)
 - LEGAL_NAME: Legal name section
 - OTHER: Other sections not covered above
   </section_types>

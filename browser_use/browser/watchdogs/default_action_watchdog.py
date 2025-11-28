@@ -317,14 +317,6 @@ class DefaultActionWatchdog(BaseWatchdog):
 					except Exception as e:
 						pass
 					await self._type_to_page(event.text)
-					# Log with sensitive data protection
-					if event.is_sensitive:
-						if event.sensitive_key_name:
-							self.logger.info(f'⌨️ Typed <{event.sensitive_key_name}> to the page as fallback')
-						else:
-							self.logger.info('⌨️ Typed <sensitive> to the page as fallback')
-					else:
-						self.logger.info(f'⌨️ Typed "{event.text}" to the page as fallback')
 					return None  # No coordinates available for fallback typing
 
 			# Note: We don't clear cached state here - let multi_act handle DOM change detection

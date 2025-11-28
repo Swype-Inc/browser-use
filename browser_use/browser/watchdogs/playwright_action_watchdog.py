@@ -820,19 +820,7 @@ class PlaywrightActionWatchdog(BaseWatchdog):
 					self.logger.warning(f'Failed to type to element {index_for_logging}: {e}. Falling back to page typing.')
 					page = await self._get_playwright_page()
 					thread = _get_playwright_thread()
-					
-					async def type_page_fallback_coro():
-						await page.keyboard.type(event.text, delay=18)
-					
-					await thread.run_coro(type_page_fallback_coro())
-					# Log with sensitive data protection
-					if event.is_sensitive:
-						if event.sensitive_key_name:
-							self.logger.info(f'⌨️ Typed <{event.sensitive_key_name}> to the page as fallback')
-						else:
-							self.logger.info('⌨️ Typed <sensitive> to the page as fallback')
-					else:
-						self.logger.info(f'⌨️ Typed "{event.text}" to the page as fallback')
+				
 					return None  # No coordinates available for fallback typing
 
 			# Note: We don't clear cached state here - let multi_act handle DOM change detection

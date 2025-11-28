@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, List, Optional
 from browser_use.browser import BrowserSession
 from browser_use.browser.views import BrowserStateSummary
 from browser_use.job_application.pipeline.question_extraction.schema import ApplicationQuestion
-from browser_use.job_application.pipeline.question_filling.schema import FillResult, QuestionFillAssessment
+from browser_use.job_application.pipeline.question_filling.schema import FillResult
 from browser_use.job_application.pipeline.shared.schemas import QuestionAnswer
 from browser_use.job_application.pipeline.shared.utils import debug_input, format_browser_state_message
 from browser_use.llm.base import BaseChatModel
@@ -16,6 +16,7 @@ from browser_use.llm.messages import ContentPartImageParam, ContentPartTextParam
 from browser_use.tools.registry.views import ActionModel
 from browser_use.tools.service import Tools
 from browser_use.agent.views import AgentOutput, ActionResult
+from pydantic import Field, create_model
 
 if TYPE_CHECKING:
 	pass
@@ -32,17 +33,6 @@ def _load_filling_prompt() -> str:
 			return f.read()
 	except Exception as e:
 		raise RuntimeError(f'Failed to load question filling prompt: {e}')
-
-
-def _load_assessment_prompt() -> str:
-	"""Load the question fill assessment prompt template."""
-	try:
-		with importlib.resources.files('browser_use.job_application.pipeline.question_filling').joinpath(
-			'assessment_prompt.md'
-		).open('r', encoding='utf-8') as f:
-			return f.read()
-	except Exception as e:
-		raise RuntimeError(f'Failed to load question fill assessment prompt: {e}')
 
 
 def _build_filling_prompt(question: ApplicationQuestion, answer: QuestionAnswer) -> str:
@@ -73,54 +63,34 @@ def _build_filling_prompt(question: ApplicationQuestion, answer: QuestionAnswer)
 	)
 
 
-def _build_assessment_prompt(question: ApplicationQuestion, answer: QuestionAnswer) -> str:
-	"""Build the question fill assessment prompt.
-	
-	Args:
-		question: The question to check
-		answer: The expected answer
-		
-	Returns:
-		Formatted prompt string
-	"""
-	template = _load_assessment_prompt()
-	
-	return template.format(
-		question_text=question.question_text,
-		answer_value=answer.answer_value,
-		question_type=question.question_type.value,
-		element_index=question.element_index,
-	)
-
-
-async def get_question_fill_actions(
+async def get_question_fill_output(
 	browser_session: BrowserSession,
 	llm: BaseChatModel,
 	tools: Tools,
 	browser_state: BrowserStateSummary,
 	question: ApplicationQuestion,
 	answer: QuestionAnswer,
-) -> List[ActionModel]:
-	"""Get actions for filling a question using LLM.
+) -> tuple[bool, List[ActionModel], Optional[str]]:
+	"""Get assessment and actions for filling a question using LLM in a single call.
 	
 	Args:
 		browser_session: Browser session
-		llm: LLM for action selection
+		llm: LLM for assessment and action selection
 		tools: Tools registry for getting available actions
 		browser_state: Current browser state
 		question: The question to fill
 		answer: The answer to fill with
 		
 	Returns:
-		List of actions to execute
+		Tuple of (is_filled, actions, reasoning)
 	"""
-	logger.debug(f'🤖 Getting fill actions for question: "{question.question_text}"...')
+	logger.debug(f'🤖 Getting fill assessment and actions for question: "{question.question_text}"...')
 
 	# Get available actions for this page
 	page_filtered_actions = tools.registry.get_prompt_description(browser_state.url)
 	actions_description = page_filtered_actions if page_filtered_actions else 'Available actions: click, input, upload_file, select_dropdown, etc.'
 
-	# Build action selection prompt using template
+	# Build combined prompt using template
 	prompt_text = _build_filling_prompt(question, answer)
 	
 	action_prompt_content = f"""{prompt_text}
@@ -129,66 +99,19 @@ async def get_question_fill_actions(
 {actions_description}
 </available_actions>
 
-Return your selected actions."""
+Return your assessment (is_filled, reasoning) and selected actions."""
 
 	# Format browser state using shared utility
 	browser_state_text = format_browser_state_message(browser_state)
 	
-	# Combine into ONE message
+	# Combine into ONE message with screenshot
 	combined_content = f"{action_prompt_content}\n\n<browser_state>\n{browser_state_text}\n</browser_state>"
-	messages = [UserMessage(content=combined_content)]
-
-	# Create AgentOutput type with available actions
-	ActionModel = tools.registry.create_action_model(page_url=browser_state.url)
-	AgentOutputType = AgentOutput.type_with_custom_actions_no_thinking(ActionModel)
-
-	try:
-		response = await llm.ainvoke(messages, output_format=AgentOutputType)
-		agent_output = response.completion
-		actions = agent_output.action
-		logger.info(f'⚡ Selected {len(actions)} action(s) for question fill')
-		debug_input(f'[DEBUG] Press Enter to continue after question fill action selection ({len(actions)} actions) for: "{question.question_text[:50]}..."...')
-		return actions
-	except Exception as e:
-		logger.error(f'Failed to get question fill actions: {e}')
-		raise
-
-
-async def is_question_filled(
-	browser_session: BrowserSession,
-	llm: BaseChatModel,
-	browser_state: BrowserStateSummary,
-	question: ApplicationQuestion,
-	answer: QuestionAnswer,
-) -> bool:
-	"""Check if the question is filled correctly using LLM assessment.
-	
-	Args:
-		browser_session: Browser session
-		llm: LLM for assessment
-		browser_state: Current browser state
-		question: The question to check
-		answer: The expected answer
-		
-	Returns:
-		True if filled correctly, False otherwise
-	"""
-	logger.debug(f'🔍 Checking if question is filled: "{question.question_text}"...')
-	
-	# Build assessment prompt using template
-	prompt_text = _build_assessment_prompt(question, answer)
-	
-	# Format browser state
-	browser_state_text = format_browser_state_message(browser_state)
-	
-	# Combine prompt and browser state
-	assessment_content = f"{prompt_text}\n\n<browser_state>\n{browser_state_text}\n</browser_state>"
 	
 	# Create message with screenshot if available
 	if browser_state.screenshot:
 		messages = [UserMessage(
 			content=[
-				ContentPartTextParam(type="text", text=assessment_content),
+				ContentPartTextParam(type="text", text=combined_content),
 				ContentPartImageParam(
 					type="image_url",
 					image_url=ImageURL(url=f'data:image/png;base64,{browser_state.screenshot}')
@@ -196,16 +119,58 @@ async def is_question_filled(
 			]
 		)]
 	else:
-		messages = [UserMessage(content=assessment_content)]
+		messages = [UserMessage(content=combined_content)]
+
+	# Create combined output model
+	ActionModel = tools.registry.create_action_model(page_url=browser_state.url)
 	
+	# Create a model that extends AgentOutput with is_filled and reasoning
+	
+	class QuestionFillAgentOutput(AgentOutput):
+		is_filled: bool = Field(description="Whether the question is already filled correctly. Check the screenshot and DOM to verify.")
+		reasoning: Optional[str] = Field(None, description="Brief explanation of why the question is or isn't filled (if not filled, explain what's missing)")
+		
+		@classmethod
+		def model_json_schema(cls, **kwargs):
+			schema = super().model_json_schema(**kwargs)
+			# Remove thinking field
+			if 'thinking' in schema.get('properties', {}):
+				del schema['properties']['thinking']
+			# Make action optional (can be empty if already filled)
+			if 'required' in schema:
+				schema['required'] = [f for f in schema['required'] if f != 'action']
+			return schema
+	
+	CombinedOutputType = create_model(
+		'QuestionFillAgentOutput',
+		__base__=QuestionFillAgentOutput,
+		action=(
+			list[ActionModel],
+			Field(
+				default_factory=list,
+				description='List of actions to execute (empty if already filled)',
+				json_schema_extra={'min_items': 0}
+			),
+		),
+		__module__=QuestionFillAgentOutput.__module__,
+	)
+
 	try:
-		response = await llm.ainvoke(messages, output_format=QuestionFillAssessment)
-		assessment = response.completion
-		logger.debug(f'Question fill assessment: {assessment.is_filled} - {assessment.reasoning or "No reasoning provided"}')
-		return assessment.is_filled
+		response = await llm.ainvoke(messages, output_format=CombinedOutputType)
+		output = response.completion
+		is_filled = output.is_filled
+		actions = output.action if output.action else []
+		reasoning = output.reasoning
+		
+		logger.info(f'📊 Assessment: is_filled={is_filled}, actions={len(actions)}')
+		if reasoning:
+			logger.debug(f'💭 Reasoning: {reasoning}')
+		
+		debug_input(f'[DEBUG] Press Enter to continue after question fill assessment and action selection (filled={is_filled}, {len(actions)} actions) for: "{question.question_text[:50]}..."...')
+		return is_filled, actions, reasoning
 	except Exception as e:
-		logger.warning(f'Failed to assess question fill status: {e}, assuming not filled')
-		return False
+		logger.error(f'Failed to get question fill output: {e}')
+		raise
 
 
 async def execute_actions(
@@ -291,19 +256,35 @@ async def run(
 				include_screenshot=True
 			)
 			
-			# 2. Check if already filled
-			filled = await is_question_filled(browser_session, llm, browser_state, question, answer)
-			if filled:
+			# 2. Get assessment and actions in one LLM call
+			is_filled, actions, reasoning = await get_question_fill_output(
+				browser_session, llm, tools, browser_state, question, answer
+			)
+			
+			# 3. If already filled, return success
+			if is_filled:
 				logger.info(f'✅ Question already filled correctly: "{question.question_text}"')
+				if reasoning:
+					logger.debug(f'💭 Assessment reasoning: {reasoning}')
 				return FillResult(success=True, element_index=question.element_index)
 			
-			# 3. Get actions from LLM
-			actions = await get_question_fill_actions(browser_session, llm, tools, browser_state, question, answer)
+			# 4. If no actions provided but not filled, log warning and retry
+			if not actions:
+				logger.warning(f'⚠️ No actions provided but question not filled. Reasoning: {reasoning or "None provided"}. Retrying...')
+				if attempt < max_attempts:
+					await browser_session._dom_watchdog.wait_for_page_stability()
+					continue
+				else:
+					return FillResult(
+						success=False,
+						error=f"Failed to fill question: No actions provided after {max_attempts} attempts",
+						element_index=question.element_index,
+					)
 			
-			# 4. Execute actions
+			# 5. Execute actions
 			results = await execute_actions(browser_session, tools, actions)
 			
-			# 5. Check if any action failed
+			# 6. Check if any action failed
 			if results and any(r.error for r in results):
 				errors = [r.error for r in results if r.error]
 				logger.warning(f'⚠️ Actions failed on attempt {attempt}: {", ".join(errors)}')
@@ -317,21 +298,27 @@ async def run(
 				await browser_session._dom_watchdog.wait_for_page_stability()
 				continue
 			
-			# 6. Wait for page to stabilize after actions (network + DOM)
+			# 7. Wait for page to stabilize after actions (network + DOM)
 			await browser_session._dom_watchdog.wait_for_page_stability()
 			
-			# 7. Reassess if filled (read browser state again)
+			# 8. Reassess if filled (read browser state again and check)
 			browser_state = await browser_session.get_browser_state_summary(
 				include_all_form_fields=True,
 				include_screenshot=True
 			)
-			filled = await is_question_filled(browser_session, llm, browser_state, question, answer)
+			is_filled, _, reasoning = await get_question_fill_output(
+				browser_session, llm, tools, browser_state, question, answer
+			)
 			
-			if filled:
+			if is_filled:
 				logger.info(f'✅ Question filled successfully on attempt {attempt}: "{question.question_text}"')
+				if reasoning:
+					logger.debug(f'💭 Assessment reasoning: {reasoning}')
 				return FillResult(success=True, element_index=question.element_index)
 			else:
 				logger.warning(f'⚠️ Question not filled correctly after attempt {attempt}, retrying...')
+				if reasoning:
+					logger.debug(f'💭 Assessment reasoning: {reasoning}')
 				if attempt < max_attempts:
 					# Wait for DOM stability before next attempt
 					await browser_session._dom_watchdog.wait_for_page_stability()

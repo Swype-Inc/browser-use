@@ -10,7 +10,7 @@ from browser_use.job_application.pipeline.question_extraction.schema import Appl
 from browser_use.job_application.pipeline.shared.schemas import ApplicationSection
 from browser_use.job_application.pipeline.shared.utils import debug_input, format_browser_state_message
 from browser_use.llm.base import BaseChatModel
-from browser_use.llm.messages import UserMessage
+from browser_use.llm.messages import ContentPartImageParam, ContentPartTextParam, ImageURL, UserMessage
 from browser_use.observability import observe_debug
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,7 +79,7 @@ async def run(
 	Returns:
 		List of questions found in the section
 	"""
-	browser_state = await browser_session.get_browser_state_summary(include_all_form_fields=True)
+	browser_state = await browser_session.get_browser_state_summary(include_all_form_fields=True, include_screenshot=True)
 
 	# Build prompt with section info and question texts
 	prompt_text = _build_prompt(section, question_texts)
@@ -89,7 +89,20 @@ async def run(
 	
 	# Combine into ONE message
 	combined_content = f"{prompt_text}\n\n<browser_state>\n{browser_state_text}\n</browser_state>"
-	messages = [UserMessage(content=combined_content)]
+	
+	# Create message with screenshot if available
+	if browser_state.screenshot:
+		messages = [UserMessage(
+			content=[
+				ContentPartTextParam(type="text", text=combined_content),
+				ContentPartImageParam(
+					type="image_url",
+					image_url=ImageURL(url=f'data:image/png;base64,{browser_state.screenshot}')
+				)
+			]
+		)]
+	else:
+		messages = [UserMessage(content=combined_content)]
 
 	# Call LLM with structured output
 	# Create a model for list of questions

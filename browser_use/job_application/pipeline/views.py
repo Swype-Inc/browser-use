@@ -18,7 +18,7 @@ from browser_use.job_application.pipeline.shared.schemas import (
 # Re-export step-specific schemas
 from browser_use.job_application.pipeline.answer_generation.schema import AnswerGenerationOutput
 from browser_use.job_application.pipeline.page_classification.schema import PageClassificationOutput
-from browser_use.job_application.pipeline.question_filling.schema import FillResult, QuestionFillAssessment
+from browser_use.job_application.pipeline.question_filling.schema import FillResult
 from browser_use.job_application.pipeline.navigation.schema import NavigationResult
 from browser_use.job_application.pipeline.section_identification.schema import SectionIdentificationOutput
 
@@ -38,5 +38,4 @@ __all__ = [
 	'AnswerGenerationOutput',
 	'FillResult',
 	'NavigationResult',
-	'QuestionFillAssessment',
 ]

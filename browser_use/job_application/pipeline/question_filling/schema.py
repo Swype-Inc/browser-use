@@ -14,12 +14,3 @@ class FillResult(BaseModel):
 	error: Optional[str] = Field(None, description="Error message if fill failed")
 	element_index: Optional[int] = Field(None, description="Element index that was filled")
 
-
-class QuestionFillAssessment(BaseModel):
-	"""Assessment of whether a question has been filled correctly."""
-
-	model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
-
-	is_filled: bool = Field(description="Whether the question is filled correctly")
-	reasoning: Optional[str] = Field(None, description="Brief explanation of the assessment")
-
