@@ -3,14 +3,9 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from browser_use.job_application.pipeline.views import (
-	ApplicationQuestion,
-	ApplicationSection,
-	PageType,
-	QuestionAnswer,
-	QuestionType,
-	SectionType,
-)
+from browser_use.job_application.pipeline.question_extraction.schema import ApplicationQuestion
+from browser_use.job_application.pipeline.shared.enums import PageType, QuestionType, SectionType
+from browser_use.job_application.pipeline.shared.schemas import ApplicationSection, QuestionAnswer
 
 
 @dataclass

@@ -299,7 +299,7 @@ class DOMWatchdog(BaseWatchdog):
 			async def wait_for_dom():
 				"""Wait for DOM to stabilize (no mutations for 2 seconds, max 5 seconds)"""
 				self.logger.debug('🔍 wait_for_page_stability: ⏳ Waiting for DOM stability...')
-				dom_stable = await self._wait_for_dom_stability(max_wait_time=5.0, stability_period=2.0)
+				dom_stable = await self.wait_for_dom_stability(max_wait_time=5.0, stability_period=2.0)
 				
 				if dom_stable:
 					self.logger.debug('🔍 wait_for_page_stability: ✅ DOM stabilized')
@@ -349,7 +349,7 @@ class DOMWatchdog(BaseWatchdog):
 			)
 
 	@time_execution_async('wait_for_dom_stability')
-	async def _wait_for_dom_stability(self, max_wait_time: float = 5.0, stability_period: float = 2.0) -> bool:
+	async def wait_for_dom_stability(self, max_wait_time: float = 5.0, stability_period: float = 2.0) -> bool:
 		"""Wait for DOM to stabilize (no mutations for stability_period seconds).
 		
 		Uses MutationObserver to detect when DOM stops changing.
@@ -532,7 +532,7 @@ class DOMWatchdog(BaseWatchdog):
 				async def wait_for_dom():
 					"""Wait for DOM to stabilize (no mutations for 2 seconds, max 5 seconds)"""
 					self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ⏳ Waiting for DOM stability...')
-					dom_stable = await self._wait_for_dom_stability(max_wait_time=5.0, stability_period=2.0)
+					dom_stable = await self.wait_for_dom_stability(max_wait_time=5.0, stability_period=2.0)
 					
 					if dom_stable:
 						self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: ✅ DOM stabilized')
