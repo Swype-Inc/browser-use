@@ -691,17 +691,17 @@ class DOMTreeSerializer:
 					should_make_interactive = True
 			else:
 				# Original logic for normal mode
-				# Check if scrollable container should be made interactive
-				# For scrollable elements, ONLY make them interactive if they have no interactive descendants
+			# Check if scrollable container should be made interactive
+			# For scrollable elements, ONLY make them interactive if they have no interactive descendants
 				if is_scrollable:
 					# For scrollable elements, check if they have interactive children
 					has_interactive_desc = self._has_interactive_descendants(node)
 
-					# Only make scrollable container interactive if it has NO interactive descendants
-					if not has_interactive_desc:
-						should_make_interactive = True
+				# Only make scrollable container interactive if it has NO interactive descendants
+				if not has_interactive_desc:
+					should_make_interactive = True
 				elif is_interactive_assign and (is_visible or is_file_input):
-					# Non-scrollable interactive elements: make interactive if visible (or file input)
+				# Non-scrollable interactive elements: make interactive if visible (or file input)
 					should_make_interactive = True
 
 			# Add to selector map if element should be interactive

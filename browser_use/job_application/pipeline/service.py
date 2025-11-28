@@ -187,6 +187,7 @@ class JobApplicationPipeline:
 		self.logger.info(
 			f'Page classified as: {classification.page_type.value} (confidence: {classification.confidence:.2f})'
 		)
+		input('[DEBUG] Press Enter to continue after page classification...')
 		return classification.page_type
 
 	@observe_debug(ignore_input=True, name='navigate_to_application')
@@ -324,6 +325,8 @@ class JobApplicationPipeline:
 				if not fill_result.success:
 					await self.handle_fill_error(question, answer, fill_result.error)
 
+			section_with_questions.is_complete = True
+            
 			# 4. Attempt to move to next page
 			navigation_result = await self.navigate_to_next_page()
 
@@ -362,6 +365,9 @@ class JobApplicationPipeline:
 			response = await self.llm.ainvoke(messages, output_format=SectionIdentificationOutput)
 			section_output = response.completion
 			
+			# Log rationale for debugging
+			# self.logger.info(f'📋 Section Identification Rationale:\n{section_output.rationale}')
+			
 			# Convert to ApplicationSection (without question_texts) for return type
 			section = ApplicationSection(
 				section_type=section_output.section_type,
@@ -376,6 +382,7 @@ class JobApplicationPipeline:
 			# We'll pass them to identify_questions_in_section
 			self._cached_question_texts = section_output.question_texts
 			
+			input(f'[DEBUG] Press Enter to continue after section identification: {section.name or section.section_type.value}...')
 			return section
 		except Exception as e:
 			self.logger.error(f'Failed to identify section: {e}')
@@ -413,6 +420,7 @@ class JobApplicationPipeline:
 			questions = response.completion.questions
 			# Clear cached question texts after use
 			self._cached_question_texts = []
+			input(f'[DEBUG] Press Enter to continue after question extraction ({len(questions)} questions found)...')
 			return questions
 		except Exception as e:
 			self.logger.error(f'Failed to identify questions: {e}')
@@ -444,6 +452,8 @@ class JobApplicationPipeline:
 			from browser_use.job_application.pipeline.views import AnswerGenerationOutput
 			response = await self.llm.ainvoke(messages, output_format=AnswerGenerationOutput)
 			answer_output = response.completion
+			
+			input(f'[DEBUG] Press Enter to continue after answer generation for: "{question.question_text[:50]}..."...')
 			
 			# Convert to QuestionAnswer
 			return QuestionAnswer(
@@ -611,6 +621,7 @@ Return your plan with rationale explaining your reasoning."""
 			response = await self.llm.ainvoke(messages, output_format=PlanOutput)
 			plan_output = response.completion
 			self.logger.info(f'📋 Navigation Plan: {plan_output.plan}')
+			input('[DEBUG] Press Enter to continue after navigation planning...')
 			return plan_output.plan
 		except Exception as e:
 			self.logger.warning(f'Planning failed: {e}. Continuing without plan.')
@@ -664,6 +675,7 @@ Return your selected actions."""
 			agent_output = response.completion
 			actions = agent_output.action
 			self.logger.info(f'⚡ Selected {len(actions)} navigation action(s)')
+			input(f'[DEBUG] Press Enter to continue after navigation action selection ({len(actions)} actions)...')
 			return actions
 		except Exception as e:
 			self.logger.error(f'Failed to get navigation actions: {e}')
@@ -810,6 +822,7 @@ Return your plan with rationale explaining your reasoning."""
 			response = await self.llm.ainvoke(messages, output_format=PlanOutput)
 			plan_output = response.completion
 			self.logger.info(f'📋 Account Creation Plan: {plan_output.plan}')
+			input('[DEBUG] Press Enter to continue after account creation planning...')
 			return plan_output.plan
 		except Exception as e:
 			self.logger.warning(f'Planning failed: {e}. Continuing without plan.')
@@ -874,6 +887,7 @@ Return your selected actions."""
 			agent_output = response.completion
 			actions = agent_output.action
 			self.logger.info(f'⚡ Selected {len(actions)} account creation action(s)')
+			input(f'[DEBUG] Press Enter to continue after account creation action selection ({len(actions)} actions)...')
 			return actions
 		except Exception as e:
 			self.logger.error(f'Failed to get account creation actions: {e}')

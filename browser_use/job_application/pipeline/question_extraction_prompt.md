@@ -1,29 +1,32 @@
 You are extracting questions from an application section.
 
-**Question Types:**
+<question_types>
 
 - SINGLE_SELECT: Dropdown or radio button group (select one option)
 - MULTI_SELECT: Checkbox group or multi-select dropdown (select multiple options)
 - TEXT: Single-line text input
 - TEXTAREA: Multi-line text input
 - BOOLEAN: Yes/No checkbox or toggle
+- FILE: File upload input (for resumes, cover letters, etc.)
+  </question_types>
 
-**Section Information:**
+<section_information>
 Type: {section_type}
 Name: {section_name}
 Element Indices: {section_element_indices}
+</section_information>
 
-**Questions to Extract:**
+<questions_to_extract>
 {question_texts}
+</questions_to_extract>
 
-**Instructions:**
-
+<instructions>
 1. Focus on extracting details for the questions listed above
 2. For each question text listed, find the corresponding form field in the browser state
 3. For each question, extract:
    - Question text (label, placeholder, aria-label, or nearby text)
    - Whether it's required (asterisk, "required" attribute, validation)
-   - Question type (TEXT, TEXTAREA, SINGLE_SELECT, MULTI_SELECT, BOOLEAN)
+   - Question type (TEXT, TEXTAREA, SINGLE_SELECT, MULTI_SELECT, BOOLEAN, FILE)
    - Element index (backend_node_id)
    - Options (if select type) - list all available options
    - Validation pattern (if visible in DOM)
@@ -32,12 +35,14 @@ Element Indices: {section_element_indices}
 5. You must extract the questions sequentially. Don't jump around. Go in order, from top of the application to the bottom.
 6. Be very thorough. Find all the questions in this section.
 7. All the questions in this section should be contiguous
+</instructions>
 
-**Important:**
-
+<important>
 - Extract ALL questions in the section, not just required ones
+- Do not combine any questions into one. each of these questions is a standalone directly from the DOM.
 - For select types, list all available options if visible
 - If options are truncated or hidden, set options_complete=False
 - Include element indices for all interactive elements in the question
+</important>
 
 Return a list of all questions found in this section.

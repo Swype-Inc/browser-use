@@ -60,6 +60,7 @@ class QuestionType(str, Enum):
 	TEXT = "TEXT"
 	TEXTAREA = "TEXTAREA"
 	BOOLEAN = "BOOLEAN"
+	FILE = "FILE"
 
 
 class PageClassificationOutput(BaseModel):
@@ -97,6 +98,7 @@ class SectionIdentificationOutput(BaseModel):
 	has_errors: bool = Field(default=False, description="Whether section has validation errors")
 	element_indices: List[int] = Field(default_factory=list, description="Backend node IDs of elements in this section")
 	question_texts: List[str] = Field(default_factory=list, description="List of question texts found in this section")
+	rationale: str = Field(description="Explanation of why these questions were grouped together, confirmation that they are contiguous in the DOM order, and reasoning for the section type classification")
 
 
 class QuestionOption(BaseModel):
