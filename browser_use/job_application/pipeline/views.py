@@ -138,6 +138,15 @@ class QuestionAnswer(BaseModel):
 	error_message: Optional[str] = Field(None, description="Error message if filling failed")
 
 
+class AnswerGenerationOutput(BaseModel):
+	"""Output model for LLM answer generation."""
+
+	model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
+
+	answer_value: str = Field(description="The answer value to fill into the form field")
+	reasoning: Optional[str] = Field(None, description="Brief explanation of why this answer was chosen")
+
+
 class FillResult(BaseModel):
 	"""Result of filling an answer into a form field."""
 

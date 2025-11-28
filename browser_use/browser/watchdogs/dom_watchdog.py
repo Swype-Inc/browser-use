@@ -668,7 +668,7 @@ class DOMWatchdog(BaseWatchdog):
 				)
 
 				dom_task = create_task_with_error_handling(
-					self._build_dom_tree_without_highlights(previous_state),
+					self._build_dom_tree_without_highlights(previous_state, event.include_all_form_fields),
 					name='build_dom_tree',
 					logger_instance=self.logger,
 					suppress_exceptions=True,
@@ -837,7 +837,11 @@ class DOMWatchdog(BaseWatchdog):
 
 	@time_execution_async('build_dom_tree_without_highlights')
 	@observe_debug(ignore_input=True, ignore_output=True, name='build_dom_tree_without_highlights')
-	async def _build_dom_tree_without_highlights(self, previous_state: SerializedDOMState | None = None) -> SerializedDOMState:
+	async def _build_dom_tree_without_highlights(
+		self, 
+		previous_state: SerializedDOMState | None = None,
+		include_all_form_fields: bool = False,
+	) -> SerializedDOMState:
 		"""Build DOM tree without injecting JavaScript highlights (for parallel execution)."""
 		try:
 			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: STARTING DOM tree build')
@@ -858,6 +862,7 @@ class DOMWatchdog(BaseWatchdog):
 			start = time.time()
 			self.current_dom_state, self.enhanced_dom_tree, timing_info = await self._dom_service.get_serialized_dom_tree(
 				previous_cached_state=previous_state,
+				include_all_form_fields=include_all_form_fields,
 			)
 			end = time.time()
 			total_time_ms = (end - start) * 1000
@@ -1129,7 +1134,7 @@ class DOMWatchdog(BaseWatchdog):
 		"""
 		if not self.selector_map:
 			# Build DOM if not cached
-			await self._build_dom_tree_without_highlights()
+			await self._build_dom_tree_without_highlights(include_all_form_fields=False)
 
 		return self.selector_map.get(index) if self.selector_map else None
 

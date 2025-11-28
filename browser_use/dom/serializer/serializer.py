@@ -64,6 +64,7 @@ class DOMTreeSerializer:
 		containment_threshold: float | None = None,
 		paint_order_filtering: bool = True,
 		session_id: str | None = None,
+		include_all_form_fields: bool = False,
 	):
 		self.root_node = root_node
 		self._interactive_counter = 1
@@ -80,6 +81,8 @@ class DOMTreeSerializer:
 		self.paint_order_filtering = paint_order_filtering
 		# Session ID for session-specific exclude attribute
 		self.session_id = session_id
+		# Include all form fields regardless of visibility
+		self.include_all_form_fields = include_all_form_fields
 
 	def _safe_parse_number(self, value_str: str, default: float) -> float:
 		"""Parse string to float, handling negatives and decimals."""
@@ -115,8 +118,9 @@ class DOMTreeSerializer:
 		self.timing_info['create_simplified_tree'] = end_step1 - start_step1
 
 		# Step 2: Remove elements based on paint order
+		# Skip paint order filtering when including all form fields to minimize filtering
 		start_step3 = time.time()
-		if self.paint_order_filtering and simplified_tree:
+		if self.paint_order_filtering and simplified_tree and not self.include_all_form_fields:
 			PaintOrderRemover(simplified_tree).calculate_paint_order()
 		end_step3 = time.time()
 		self.timing_info['calculate_paint_order'] = end_step3 - start_step3
@@ -128,7 +132,8 @@ class DOMTreeSerializer:
 		self.timing_info['optimize_tree'] = end_step2 - start_step2
 
 		# Step 3: Apply bounding box filtering (NEW)
-		if self.enable_bbox_filtering and optimized_tree:
+		# Skip bbox filtering when including all form fields to minimize filtering
+		if self.enable_bbox_filtering and optimized_tree and not self.include_all_form_fields:
 			start_step3 = time.time()
 			filtered_tree = self._apply_bounding_box_filtering(optimized_tree)
 			end_step3 = time.time()
@@ -510,6 +515,39 @@ class DOMTreeSerializer:
 			if not is_visible and is_file_input:
 				is_visible = True  # Force visibility for file inputs
 
+			# When include_all_form_fields is True, minimize filtering - include more elements
+			if self.include_all_form_fields:
+				# Include if it has children, is interactive, has attributes, or is a semantic/form element
+				has_children = bool(node.children_and_shadow_roots)
+				is_interactive_element = self._is_interactive_cached(node)
+				has_attributes = bool(node.attributes)
+				tag = node.tag_name.lower() if node.tag_name else ''
+				is_semantic_form_element = tag in {'form', 'label', 'fieldset', 'legend', 'input', 'select', 'textarea', 'button', 'option', 'optgroup'}
+				
+				# Be very permissive - include almost everything except obvious noise
+				# Only exclude if it's completely empty and has no meaningful properties
+				if has_children or is_interactive_element or has_attributes or is_semantic_form_element or is_visible or is_scrollable or has_shadow_content or is_shadow_host:
+					simplified = SimplifiedNode(original_node=node, children=[], is_shadow_host=is_shadow_host)
+					
+					# Process ALL children including shadow roots
+					for child in node.children_and_shadow_roots:
+						simplified_child = self._create_simplified_tree(child, depth + 1)
+						if simplified_child:
+							simplified.children.append(simplified_child)
+					
+					# COMPOUND CONTROL PROCESSING
+					self._add_compound_components(simplified, node)
+					
+					# SHADOW DOM SPECIAL CASE
+					if is_shadow_host and simplified.children:
+						return simplified
+					
+					# Return if has children or is meaningful (interactive, has attributes, semantic, etc.)
+					if simplified.children or is_interactive_element or has_attributes or is_semantic_form_element or is_visible or is_scrollable:
+						return simplified
+					return None
+
+			# Original filtering logic for normal mode
 			# Include if visible, scrollable, has children, or is shadow host
 			if is_visible or is_scrollable or has_shadow_content or is_shadow_host:
 				simplified = SimplifiedNode(original_node=node, children=[], is_shadow_host=is_shadow_host)
@@ -553,6 +591,29 @@ class DOMTreeSerializer:
 
 		node.children = optimized_children
 
+		# When include_all_form_fields is True, minimize filtering - keep more elements
+		if self.include_all_form_fields:
+			# For text nodes, keep if visible and has meaningful content
+			if node.original_node.node_type == NodeType.TEXT_NODE:
+				is_visible = node.original_node.snapshot_node and node.original_node.is_visible
+				if is_visible and node.original_node.node_value and node.original_node.node_value.strip() and len(node.original_node.node_value.strip()) > 1:
+					return node
+				return None
+			
+			# For element nodes, keep if has children, is interactive, has attributes, or is visible
+			has_children = bool(node.children)
+			is_interactive = self._is_interactive_cached(node.original_node)
+			has_attributes = bool(node.original_node.attributes)
+			is_visible = node.original_node.snapshot_node and node.original_node.is_visible
+			tag = node.original_node.tag_name.lower() if node.original_node.tag_name else ''
+			is_semantic_form_element = tag in {'form', 'label', 'fieldset', 'legend', 'input', 'select', 'textarea', 'button', 'option', 'optgroup'}
+			
+			# Keep almost everything - only filter out completely empty, non-interactive, non-semantic elements
+			if has_children or is_interactive or has_attributes or is_visible or node.original_node.is_actually_scrollable or is_semantic_form_element:
+				return node
+			return None
+
+		# Original filtering logic for normal mode
 		# Keep meaningful nodes
 		is_visible = node.original_node.snapshot_node and node.original_node.is_visible
 
@@ -621,19 +682,27 @@ class DOMTreeSerializer:
 				and node.original_node.attributes.get('type') == 'file'
 			)
 
-			# Check if scrollable container should be made interactive
-			# For scrollable elements, ONLY make them interactive if they have no interactive descendants
+			# When include_all_form_fields is True, be more permissive with interactive assignment
 			should_make_interactive = False
-			if is_scrollable:
-				# For scrollable elements, check if they have interactive children
-				has_interactive_desc = self._has_interactive_descendants(node)
-
-				# Only make scrollable container interactive if it has NO interactive descendants
-				if not has_interactive_desc:
+			if self.include_all_form_fields:
+				# Mark interactive if it's an interactive element OR has children (might contain forms)
+				# This ensures we capture all potentially interactive elements
+				if is_interactive_assign or node.children:
 					should_make_interactive = True
-			elif is_interactive_assign and (is_visible or is_file_input):
-				# Non-scrollable interactive elements: make interactive if visible (or file input)
-				should_make_interactive = True
+			else:
+				# Original logic for normal mode
+				# Check if scrollable container should be made interactive
+				# For scrollable elements, ONLY make them interactive if they have no interactive descendants
+				if is_scrollable:
+					# For scrollable elements, check if they have interactive children
+					has_interactive_desc = self._has_interactive_descendants(node)
+
+					# Only make scrollable container interactive if it has NO interactive descendants
+					if not has_interactive_desc:
+						should_make_interactive = True
+				elif is_interactive_assign and (is_visible or is_file_input):
+					# Non-scrollable interactive elements: make interactive if visible (or file input)
+					should_make_interactive = True
 
 			# Add to selector map if element should be interactive
 			if should_make_interactive:

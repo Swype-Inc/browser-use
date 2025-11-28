@@ -756,7 +756,9 @@ class DomService:
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_serialized_dom_tree')
 	async def get_serialized_dom_tree(
-		self, previous_cached_state: SerializedDOMState | None = None
+		self, 
+		previous_cached_state: SerializedDOMState | None = None,
+		include_all_form_fields: bool = False,
 	) -> tuple[SerializedDOMState, EnhancedDOMTreeNode, dict[str, float]]:
 		"""Get the serialized DOM tree representation for LLM consumption.
 
@@ -785,7 +787,11 @@ class DomService:
 		start_serialize = time.time()
 
 		serialized_dom_state, serializer_timing = DOMTreeSerializer(
-			enhanced_dom_tree, previous_cached_state, paint_order_filtering=self.paint_order_filtering, session_id=session_id
+			enhanced_dom_tree, 
+			previous_cached_state, 
+			paint_order_filtering=self.paint_order_filtering, 
+			session_id=session_id,
+			include_all_form_fields=include_all_form_fields,
 		).serialize_accessible_elements()
 		total_serialization_ms = (time.time() - start_serialize) * 1000
 

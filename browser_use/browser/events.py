@@ -197,6 +197,7 @@ class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
 	include_dom: bool = True
 	include_screenshot: bool = True
 	include_recent_events: bool = False
+	include_all_form_fields: bool = False  # Include all form fields regardless of visibility
 
 	event_timeout: float | None = _get_timeout('TIMEOUT_BrowserStateRequestEvent', 30.0)  # seconds
 

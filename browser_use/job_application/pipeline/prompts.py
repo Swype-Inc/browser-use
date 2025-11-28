@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, List, Optional
 if TYPE_CHECKING:
 	from browser_use.browser.views import BrowserStateSummary
 	from browser_use.job_application.pipeline.state import PipelineState
-	from browser_use.job_application.pipeline.views import ApplicationSection
+	from browser_use.job_application.pipeline.views import ApplicationSection, ApplicationQuestion
 
 logger = logging.getLogger(__name__)
 
@@ -92,4 +92,39 @@ class PipelinePromptLoader:
 		password = password or "[PASSWORD_NOT_PROVIDED]"
 		
 		return template.format(email=email, password=password)
+
+	def build_answer_generation_prompt(self, question: 'ApplicationQuestion', user_profile: dict) -> str:
+		"""Build answer generation prompt.
+		
+		Args:
+			question: The question to generate an answer for
+			user_profile: User profile data dictionary
+		"""
+		template = self._load_template('answer_generation_prompt')
+		
+		# Format user profile information
+		import json
+		user_profile_str = json.dumps(user_profile, indent=2) if user_profile else "{}"
+		
+		# Format question details
+		question_type = question.question_type.value
+		is_required = "Yes" if question.is_required else "No"
+		
+		# Format options if available
+		if question.options:
+			options_str = '\n'.join(f'- {opt.text}' + (f' (value: {opt.value})' if opt.value else '') for opt in question.options)
+		else:
+			options_str = 'None'
+		
+		# Format validation pattern if available
+		validation_pattern = question.validation_pattern or 'None'
+		
+		return template.format(
+			question_text=question.question_text,
+			question_type=question_type,
+			is_required=is_required,
+			options=options_str,
+			validation_pattern=validation_pattern,
+			user_profile=user_profile_str,
+		)
 

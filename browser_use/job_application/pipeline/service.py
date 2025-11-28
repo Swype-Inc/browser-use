@@ -46,6 +46,7 @@ class JobApplicationPipeline:
 		answer_generator_client: Optional[AnswerGeneratorClient] = None,
 		email: Optional[str] = None,
 		password: Optional[str] = None,
+		user_profile: Optional[dict] = None,
 	):
 		"""Initialize pipeline.
 
@@ -55,12 +56,14 @@ class JobApplicationPipeline:
 			answer_generator_client: Optional websocket client for answer generation
 			email: User email for account creation/sign-in
 			password: User password for account creation/sign-in
+			user_profile: User profile data (dict with personal/professional info)
 		"""
 		self.browser_session = browser_session
 		self.llm = llm
 		self.answer_generator_client = answer_generator_client
 		self.email = email
 		self.password = password
+		self.user_profile = user_profile or {}
 		self.state = PipelineState()
 		self.prompt_loader = PipelinePromptLoader()
 		self.logger = logging.getLogger(__name__)
@@ -342,7 +345,7 @@ class JobApplicationPipeline:
 	@observe_debug(ignore_input=True, name='identify_next_section')
 	async def identify_next_section(self) -> Optional[ApplicationSection]:
 		"""Identify the next section that needs to be filled, including question texts."""
-		browser_state = await self.browser_session.get_browser_state_summary()
+		browser_state = await self.browser_session.get_browser_state_summary(include_all_form_fields=True)
 
 		# Build prompt (instructions only)
 		prompt_text = self.prompt_loader.build_section_identification_prompt(self.state)
@@ -382,7 +385,7 @@ class JobApplicationPipeline:
 	@observe_debug(ignore_input=True, name='identify_questions')
 	async def identify_questions_in_section(self, section: ApplicationSection) -> List[ApplicationQuestion]:
 		"""Identify all questions in a section, using cached question texts from section identification."""
-		browser_state = await self.browser_session.get_browser_state_summary()
+		browser_state = await self.browser_session.get_browser_state_summary(include_all_form_fields=True)
 
 		# Build prompt (instructions only)
 		prompt_text = self.prompt_loader.build_question_extraction_prompt(section, question_texts=self._cached_question_texts)
@@ -417,25 +420,50 @@ class JobApplicationPipeline:
 			return []
 
 	async def generate_answer(self, question: ApplicationQuestion) -> QuestionAnswer:
-		"""Generate answer via websocket to browser extension."""
+		"""Generate answer using LLM based on user profile and question."""
+		# Try websocket first if available
 		if self.answer_generator_client:
 			try:
 				return await self.answer_generator_client.generate_answer(question)
 			except NotImplementedError:
-				self.logger.warning('Websocket answer generation not available, using placeholder')
+				self.logger.warning('Websocket answer generation not available, using LLM')
 			except Exception as e:
 				self.logger.error(f'Failed to generate answer via websocket: {e}')
 
-		# Fallback: return placeholder answer
-		# TODO: Remove this once websocket is implemented
-		return QuestionAnswer(
-			question_text=question.question_text,
-			answer_value='PLACEHOLDER_ANSWER',
-			answer_type=question.question_type,
-			element_index=question.element_index,
-			filled_successfully=False,
-			error_message='Answer generation not implemented',
-		)
+		# Use LLM to generate answer
+		try:
+			# Build prompt with user profile and question
+			prompt_text = self.prompt_loader.build_answer_generation_prompt(
+				question=question,
+				user_profile=self.user_profile,
+			)
+			
+			messages = [UserMessage(content=prompt_text)]
+			
+			# Use structured output for answer generation
+			from browser_use.job_application.pipeline.views import AnswerGenerationOutput
+			response = await self.llm.ainvoke(messages, output_format=AnswerGenerationOutput)
+			answer_output = response.completion
+			
+			# Convert to QuestionAnswer
+			return QuestionAnswer(
+				question_text=question.question_text,
+				answer_value=answer_output.answer_value,
+				answer_type=question.question_type,
+				element_index=question.element_index,
+				filled_successfully=True,
+			)
+		except Exception as e:
+			self.logger.error(f'Failed to generate answer via LLM: {e}')
+			# Fallback: return placeholder answer
+			return QuestionAnswer(
+				question_text=question.question_text,
+				answer_value='PLACEHOLDER_ANSWER',
+				answer_type=question.question_type,
+				element_index=question.element_index,
+				filled_successfully=False,
+				error_message=f'Answer generation failed: {str(e)}',
+			)
 
 	async def fill_answer(
 		self, question: ApplicationQuestion, answer: QuestionAnswer
@@ -479,7 +507,7 @@ class JobApplicationPipeline:
 		"""Attempt to navigate to next page."""
 		try:
 			# Look for "Save and Continue", "Next", "Continue" buttons
-			browser_state = await self.browser_session.get_browser_state_summary()
+			browser_state = await self.browser_session.get_browser_state_summary(include_all_form_fields=True)
 			current_url = browser_state.url
 
 			# Find navigation button
@@ -489,7 +517,7 @@ class JobApplicationPipeline:
 
 			# Wait a bit to see if page changes
 			await asyncio.sleep(1.0)
-			new_browser_state = await self.browser_session.get_browser_state_summary()
+			new_browser_state = await self.browser_session.get_browser_state_summary(include_all_form_fields=True)
 			page_changed = new_browser_state.url != current_url
 
 			return NavigationResult(success=True, page_changed=page_changed)
@@ -529,13 +557,14 @@ class JobApplicationPipeline:
 
 	# ========== Navigation Helper Methods ==========
 
-	async def _prepare_navigation_context(self) -> BrowserStateSummary:
+	async def _prepare_navigation_context(self, include_all_form_fields: bool = False) -> BrowserStateSummary:
 		"""Prepare context for navigation: get browser state and wait for stability."""
 		self.logger.debug('🌐 Getting browser state for navigation...')
 		
 		# Get browser state
 		browser_state = await self.browser_session.get_browser_state_summary(
 			include_screenshot=True,
+			include_all_form_fields=include_all_form_fields,
 		)
 
 		# Wait for page stability
@@ -696,7 +725,7 @@ Return your selected actions."""
 
 			try:
 				# Phase 1: Read DOM - Get browser state
-				browser_state = await self._prepare_navigation_context()
+				browser_state = await self._prepare_navigation_context(include_all_form_fields=True)
 
 				# Phase 2: Check if we've completed account creation (reached application or job description)
 				page_type = await self._check_account_creation_complete()

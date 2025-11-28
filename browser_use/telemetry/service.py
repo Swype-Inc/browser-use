@@ -42,13 +42,15 @@ class ProductTelemetry:
 		if telemetry_disabled:
 			self._posthog_client = None
 		else:
+			pass
+			self._posthog_client = None
 			logger.info('Using anonymized telemetry, see https://docs.browser-use.com/development/telemetry.')
-			self._posthog_client = Posthog(
-				project_api_key=self.PROJECT_API_KEY,
-				host=self.HOST,
-				disable_geoip=False,
-				enable_exception_autocapture=True,
-			)
+			# self._posthog_client = Posthog(
+			# 	project_api_key=self.PROJECT_API_KEY,
+			# 	host=self.HOST,
+			# 	disable_geoip=False,
+			# 	enable_exception_autocapture=True,
+			# )
 
 			# Silence posthog's logging
 			if not self.debug_logging:

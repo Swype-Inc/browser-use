@@ -466,6 +466,7 @@ async def main(user_data: dict):
         max_steps=50,  # Allow more steps for complex forms
         email=user_email,
         password=user_password,
+        user_profile=info,  # Pass extracted user profile data
     )
     
     # Run agent

@@ -188,6 +188,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		_url_shortening_limit: int = 25,
 		email: str | None = None,
 		password: str | None = None,
+		user_profile: dict | None = None,
 		**kwargs,
 	):
 		# Validate llm_screenshot_size
@@ -350,6 +351,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		# Store email and password for job application pipeline
 		self.email = email
 		self.password = password
+		self.user_profile = user_profile
 
 		# Initialize agent directory
 		import time
@@ -2135,6 +2137,7 @@ Since no plan is available, you should:
 				answer_generator_client=answer_generator_client,
 				email=self.email,
 				password=self.password,
+				user_profile=self.user_profile,
 			)
 
 			self.logger.info('🚀 Starting job application pipeline...')
