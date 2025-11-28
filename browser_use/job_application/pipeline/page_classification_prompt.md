@@ -4,7 +4,7 @@ Based on the browser state provided, classify the page as one of the following t
 
 **Page Types:**
 
-- APPLICATION_PAGE: Active job application form with fields to fill out
+- APPLICATION_PAGE: Active job application form with fields to fill out. If there are job application questions on the page, it is extremely likely to be an application page.
 - EXPIRATION_PAGE: Job posting has expired or is no longer available
 - CONFIRMATION_PAGE: Application submitted successfully with confirmation message
 - JOB_DESCRIPTION: Job posting page showing job details (not yet on application form)
@@ -12,6 +12,7 @@ Based on the browser state provided, classify the page as one of the following t
 - MAINTENANCE_PAGE: Site maintenance, error page, or server issues
 - ALREADY_APPLIED_PAGE: User has already applied to this job posting
 - MISC_JOB_PAGE: Other job-related page (search results, company careers page, etc.)
+- ACCOUNT_CREATION: Account creation or sign-in page that must be completed before applying (login forms, registration forms, email verification)
 
 **Instructions:**
 

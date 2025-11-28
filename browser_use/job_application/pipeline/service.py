@@ -18,6 +18,7 @@ from browser_use.job_application.pipeline.views import (
 	PageClassificationOutput,
 	PageType,
 	QuestionAnswer,
+	SectionIdentificationOutput,
 )
 from browser_use.job_application.websocket.client import AnswerGeneratorClient
 from pydantic import BaseModel, ConfigDict, Field
@@ -43,6 +44,8 @@ class JobApplicationPipeline:
 		browser_session: BrowserSession,
 		llm: BaseChatModel,
 		answer_generator_client: Optional[AnswerGeneratorClient] = None,
+		email: Optional[str] = None,
+		password: Optional[str] = None,
 	):
 		"""Initialize pipeline.
 
@@ -50,15 +53,21 @@ class JobApplicationPipeline:
 			browser_session: Browser session for interacting with the page
 			llm: LLM for classification and identification tasks
 			answer_generator_client: Optional websocket client for answer generation
+			email: User email for account creation/sign-in
+			password: User password for account creation/sign-in
 		"""
 		self.browser_session = browser_session
 		self.llm = llm
 		self.answer_generator_client = answer_generator_client
+		self.email = email
+		self.password = password
 		self.state = PipelineState()
 		self.prompt_loader = PipelinePromptLoader()
 		self.logger = logging.getLogger(__name__)
 		# Initialize Tools for navigation actions
 		self.tools = Tools()
+		# Cache for question texts from section identification
+		self._cached_question_texts: List[str] = []
 
 	def _format_browser_state_message(self, browser_state: BrowserStateSummary) -> str:
 		"""Format browser state using the same logic as AgentMessagePrompt.
@@ -92,6 +101,13 @@ class JobApplicationPipeline:
 			if page_type == PageType.JOB_DESCRIPTION or page_type == PageType.MISC_JOB_PAGE:
 				await self.navigate_to_application()
 				# Re-classify after navigation
+				page_type = await self.classify_page()
+				self.state.current_page_type = page_type
+
+			# Handle account creation/sign-in if needed
+			if page_type == PageType.ACCOUNT_CREATION:
+				await self.handle_account_creation()
+				# Re-classify after account creation
 				page_type = await self.classify_page()
 				self.state.current_page_type = page_type
 
@@ -240,7 +256,7 @@ class JobApplicationPipeline:
 				break
 
 			self.state.current_section = section
-			section_name = section.name or section.type.value
+			section_name = section.name or section.section_type.value
 			self.logger.info(f'Working on section: {section_name}')
 
 			# Add section to tracking if not already present
@@ -248,7 +264,7 @@ class JobApplicationPipeline:
 			for existing_section in self.state.sections:
 				if (
 					existing_section.name == section.name
-					and existing_section.type == section.type
+					and existing_section.type == section.section_type
 					and existing_section.section_index == section.section_index
 				):
 					section_with_questions = existing_section
@@ -325,7 +341,7 @@ class JobApplicationPipeline:
 
 	@observe_debug(ignore_input=True, name='identify_next_section')
 	async def identify_next_section(self) -> Optional[ApplicationSection]:
-		"""Identify the next section that needs to be filled."""
+		"""Identify the next section that needs to be filled, including question texts."""
 		browser_state = await self.browser_session.get_browser_state_summary()
 
 		# Build prompt (instructions only)
@@ -338,12 +354,25 @@ class JobApplicationPipeline:
 		combined_content = f"{prompt_text}\n\n<browser_state>\n{browser_state_text}\n</browser_state>"
 		messages = [UserMessage(content=combined_content)]
 
-		# Call LLM with structured output
-		# TODO: Define output format for section identification (could be Optional[ApplicationSection] or List[ApplicationSection])
-		# For now, using ApplicationSection directly
+		# Call LLM with structured output that includes question texts
 		try:
-			response = await self.llm.ainvoke(messages, output_format=ApplicationSection)
-			section = response.completion
+			response = await self.llm.ainvoke(messages, output_format=SectionIdentificationOutput)
+			section_output = response.completion
+			
+			# Convert to ApplicationSection (without question_texts) for return type
+			section = ApplicationSection(
+				section_type=section_output.section_type,
+				name=section_output.name,
+				section_index=section_output.section_index,
+				is_complete=section_output.is_complete,
+				has_errors=section_output.has_errors,
+				element_indices=section_output.element_indices,
+			)
+			
+			# Store question texts for use in question extraction
+			# We'll pass them to identify_questions_in_section
+			self._cached_question_texts = section_output.question_texts
+			
 			return section
 		except Exception as e:
 			self.logger.error(f'Failed to identify section: {e}')
@@ -352,11 +381,11 @@ class JobApplicationPipeline:
 
 	@observe_debug(ignore_input=True, name='identify_questions')
 	async def identify_questions_in_section(self, section: ApplicationSection) -> List[ApplicationQuestion]:
-		"""Identify all questions in a section."""
+		"""Identify all questions in a section, using cached question texts from section identification."""
 		browser_state = await self.browser_session.get_browser_state_summary()
 
 		# Build prompt (instructions only)
-		prompt_text = self.prompt_loader.build_question_extraction_prompt(section)
+		prompt_text = self.prompt_loader.build_question_extraction_prompt(section, question_texts=self._cached_question_texts)
 		
 		# Format browser state using centralized method
 		browser_state_text = self._format_browser_state_message(browser_state)
@@ -379,9 +408,12 @@ class JobApplicationPipeline:
 		try:
 			response = await self.llm.ainvoke(messages, output_format=QuestionsListOutput)
 			questions = response.completion.questions
+			# Clear cached question texts after use
+			self._cached_question_texts = []
 			return questions
 		except Exception as e:
 			self.logger.error(f'Failed to identify questions: {e}')
+			self._cached_question_texts = []
 			return []
 
 	async def generate_answer(self, question: ApplicationQuestion) -> QuestionAnswer:
@@ -648,4 +680,173 @@ Return your selected actions."""
 		"""Check if navigation is complete by re-classifying the page."""
 		self.logger.debug('🔍 Checking if navigation to application page is complete...')
 		return await self.classify_page()
+
+	@observe_debug(ignore_input=True, name='handle_account_creation')
+	async def handle_account_creation(self) -> None:
+		"""Handle account creation or sign-in flow using full agent loop."""
+		max_steps = 20
+		consecutive_failures = 0
+		max_failures = 3
+
+		self.logger.info('🔐 Starting account creation/sign-in flow...')
+
+		for step in range(max_steps):
+			self.state.navigation_attempts += 1
+			self.logger.info(f'📍 Account creation step {step + 1}/{max_steps}')
+
+			try:
+				# Phase 1: Read DOM - Get browser state
+				browser_state = await self._prepare_navigation_context()
+
+				# Phase 2: Check if we've completed account creation (reached application or job description)
+				page_type = await self._check_account_creation_complete()
+				if page_type in [PageType.APPLICATION_PAGE, PageType.JOB_DESCRIPTION]:
+					self.logger.info('✅ Successfully completed account creation/sign-in!')
+					return
+
+				# Phase 3: Plan account creation steps
+				plan = await self._plan_account_creation(browser_state)
+
+				# Phase 4: Get account creation actions
+				actions = await self._get_account_creation_actions(browser_state, plan)
+
+				# Phase 5: Execute actions
+				results = await self._execute_navigation_actions(actions)
+
+				# Check for errors
+				if results and any(r.error for r in results):
+					consecutive_failures += 1
+					self.logger.warning(f'⚠️ Account creation step failed. Consecutive failures: {consecutive_failures}')
+					if consecutive_failures >= max_failures:
+						self.logger.error(f'❌ Account creation failed after {max_failures} consecutive failures')
+						raise RuntimeError('Account creation failed: too many consecutive failures')
+				else:
+					consecutive_failures = 0
+
+				# Wait for page to stabilize after actions
+				await asyncio.sleep(1.0)
+
+			except Exception as e:
+				self.logger.error(f'❌ Account creation step {step + 1} failed: {e}')
+				consecutive_failures += 1
+				if consecutive_failures >= max_failures:
+					raise RuntimeError(f'Account creation failed after {max_failures} consecutive failures: {e}')
+
+		# If we get here, we didn't complete account creation
+		raise RuntimeError(f'Failed to complete account creation after {max_steps} steps')
+
+	async def _check_account_creation_complete(self) -> PageType:
+		"""Check if account creation is complete by re-classifying the page."""
+		self.logger.debug('🔍 Checking if account creation is complete...')
+		page_type = await self.classify_page()
+		# Account creation is complete if we're no longer on account creation page
+		return page_type
+
+	async def _plan_account_creation(self, browser_state: BrowserStateSummary) -> Optional[str]:
+		"""Plan account creation/sign-in steps using LLM."""
+		self.logger.debug('📋 Planning account creation steps...')
+
+		# Build planning prompt (instructions only) with user credentials
+		prompt_text = self.prompt_loader.build_account_creation_prompt(
+			email=self.email,
+			password=self.password
+		)
+		
+		# Add planning instructions
+		planning_instructions = f"""{prompt_text}
+
+You are in the PLANNING phase for account creation/sign-in. Your task is to create a focused plan for completing the account creation or sign-in process.
+
+**Your Plan Should:**
+1. Identify what type of page you're on (sign-in, account creation, email verification)
+2. Determine the immediate next step(s) to complete the process
+3. Be specific about which elements need interaction (include element indices)
+4. Keep it concise - 3-5 steps maximum, focused on the current page
+
+**Common Navigation Scenarios:**
+- If on sign-in page: Fill credentials and click sign-in button
+- If on account creation: Fill registration form and submit
+- If on email verification: Handle verification flow
+
+Return your plan with rationale explaining your reasoning."""
+
+		# Format browser state using centralized method
+		browser_state_text = self._format_browser_state_message(browser_state)
+		
+		# Combine into ONE message
+		combined_content = f"{planning_instructions}\n\n<browser_state>\n{browser_state_text}\n</browser_state>"
+		messages = [UserMessage(content=combined_content)]
+
+		try:
+			response = await self.llm.ainvoke(messages, output_format=PlanOutput)
+			plan_output = response.completion
+			self.logger.info(f'📋 Account Creation Plan: {plan_output.plan}')
+			return plan_output.plan
+		except Exception as e:
+			self.logger.warning(f'Planning failed: {e}. Continuing without plan.')
+			return None
+
+	async def _get_account_creation_actions(
+		self, browser_state: BrowserStateSummary, plan: Optional[str]
+	) -> List[ActionModel]:
+		"""Get account creation actions from LLM based on plan."""
+		self.logger.debug('🤖 Getting account creation actions from LLM...')
+
+		# Get available actions for this page
+		page_filtered_actions = self.tools.registry.get_prompt_description(browser_state.url)
+		actions_description = page_filtered_actions if page_filtered_actions else 'Available actions: click, input, navigate, search, etc.'
+
+		# Build account creation prompt with user credentials
+		account_creation_prompt = self.prompt_loader.build_account_creation_prompt(
+			email=self.email,
+			password=self.password
+		)
+
+		# Build action selection prompt
+		plan_text = plan if plan else "No plan available - determine actions based on current state"
+		action_prompt_content = f"""{account_creation_prompt}
+
+You are in the ACTION SELECTION phase for account creation/sign-in.
+
+**Available Actions:**
+{actions_description}
+
+**Account Creation Plan:**
+{plan_text}
+
+**Your Task:**
+Select the specific actions needed to complete account creation or sign-in. Use the plan to guide your action selection.
+
+**Action Selection Guidelines:**
+- If plan says "fill email/password", use input actions with email="{self.email or '[EMAIL_NOT_PROVIDED]'}" and password="{self.password or '[PASSWORD_NOT_PROVIDED]'}"
+- If plan says "click Sign In", use click action with the element index
+- If plan says "click Create Account", use click action
+- If plan says "enter verification code", use input action
+- Select 1-3 actions per step to make progress
+
+**Important:** When filling email or password fields, use the exact values provided above.
+
+Return your selected actions."""
+
+		# Format browser state using centralized method
+		browser_state_text = self._format_browser_state_message(browser_state)
+		
+		# Combine into ONE message
+		combined_content = f"{action_prompt_content}\n\n<browser_state>\n{browser_state_text}\n</browser_state>"
+		messages = [UserMessage(content=combined_content)]
+
+		# Create AgentOutput type with available actions
+		# Get the action model for the current page (filters actions by URL)
+		ActionModel = self.tools.registry.create_action_model(page_url=browser_state.url)
+		AgentOutputType = AgentOutput.type_with_custom_actions_no_thinking(ActionModel)
+
+		try:
+			response = await self.llm.ainvoke(messages, output_format=AgentOutputType)
+			agent_output = response.completion
+			actions = agent_output.action
+			self.logger.info(f'⚡ Selected {len(actions)} account creation action(s)')
+			return actions
+		except Exception as e:
+			self.logger.error(f'Failed to get account creation actions: {e}')
+			raise
 

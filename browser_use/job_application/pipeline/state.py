@@ -67,7 +67,7 @@ class SectionWithQuestions:
 	def from_section(cls, section: ApplicationSection) -> 'SectionWithQuestions':
 		"""Create SectionWithQuestions from ApplicationSection."""
 		return cls(
-			type=section.type,
+			type=section.section_type,
 			name=section.name,
 			section_index=section.section_index,
 			is_complete=section.is_complete,

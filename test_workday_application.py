@@ -36,7 +36,7 @@ USER_DATA = None  # Will be set from JSON file or you can paste it here
 # Job application URL
 # JOB_URL = "https://terminix.wd1.myworkdayjobs.com/WesternExterminator/job/RNA-Anaheim-151/Manager-Operations_R-060331-2"
 
-JOB_URL = "https://chrobinson.wd5.myworkdayjobs.com/CHRobinson/job/Eden-Prairie-MN-United-States-of-America/Summer-Internship-2026---Security_R46076"
+JOB_URL = "https://job-boards.greenhouse.io/genevatrading/jobs/4853820007"
 
 # Resume download endpoint base URL
 RESUME_ENDPOINT_BASE = "https://sought-really-pony.ngrok-free.app/api/files/internal"
@@ -443,6 +443,13 @@ async def main(user_data: dict):
     # Build task from user data
     task = build_task_from_user_data(user_data)
     
+    # Extract email and password for account creation
+    # Email is already extracted in info
+    user_email = info.get('email', '')
+    # Password is currently hardcoded in build_task_from_user_data
+    # TODO: Extract password from user_data if it becomes available
+    user_password = "ObaMa!2025"
+    
     print("📋 Task:")
     print(task)
     print()
@@ -457,6 +464,8 @@ async def main(user_data: dict):
         browser=browser,
         tools=tools,
         max_steps=50,  # Allow more steps for complex forms
+        email=user_email,
+        password=user_password,
     )
     
     # Run agent

@@ -2,7 +2,7 @@
 
 import importlib.resources
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
 	from browser_use.browser.views import BrowserStateSummary
@@ -52,17 +52,44 @@ class PipelinePromptLoader:
 
 		return template.format(completed_sections=completed_sections_str)
 
-	def build_question_extraction_prompt(self, section: 'ApplicationSection') -> str:
-		"""Build question extraction prompt (instructions only)."""
+	def build_question_extraction_prompt(self, section: 'ApplicationSection', question_texts: Optional[List[str]] = None) -> str:
+		"""Build question extraction prompt (instructions only).
+		
+		Args:
+			section: The section to extract questions from
+			question_texts: Optional list of question texts identified in section identification step
+		"""
 		template = self._load_template('question_extraction_prompt')
 
-		section_type = section.type.value
+		section_type = section.section_type.value
 		section_name = section.name or 'Unnamed'
 		section_element_indices = ', '.join(map(str, section.element_indices)) if section.element_indices else 'N/A'
+		
+		# Format question texts if provided
+		if question_texts:
+			question_texts_str = '\n'.join(f'- {text}' for text in question_texts)
+		else:
+			question_texts_str = 'None (identify questions from the page)'
 
 		return template.format(
 			section_type=section_type,
 			section_name=section_name,
 			section_element_indices=section_element_indices,
+			question_texts=question_texts_str,
 		)
+
+	def build_account_creation_prompt(self, email: Optional[str] = None, password: Optional[str] = None) -> str:
+		"""Build account creation prompt (instructions only).
+		
+		Args:
+			email: User email for account creation/sign-in
+			password: User password for account creation/sign-in
+		"""
+		template = self._load_template('account_creation_prompt')
+		
+		# Default values if not provided
+		email = email or "[EMAIL_NOT_PROVIDED]"
+		password = password or "[PASSWORD_NOT_PROVIDED]"
+		
+		return template.format(email=email, password=password)
 

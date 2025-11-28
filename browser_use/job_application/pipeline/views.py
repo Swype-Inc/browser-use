@@ -20,6 +20,7 @@ class PageType(str, Enum):
 	MAINTENANCE_PAGE = "maintenance_page"
 	ALREADY_APPLIED_PAGE = "already_applied_page"
 	MISC_JOB_PAGE = "misc_job_page"
+	ACCOUNT_CREATION = "account_creation"
 
 	@classmethod
 	def get_descriptions(cls) -> dict[str, str]:
@@ -33,6 +34,7 @@ class PageType(str, Enum):
 			cls.MAINTENANCE_PAGE.value: "Site maintenance, error page, or server issues",
 			cls.ALREADY_APPLIED_PAGE.value: "User has already applied to this job posting",
 			cls.MISC_JOB_PAGE.value: "Other job-related page (search results, company careers page, etc.)",
+			cls.ACCOUNT_CREATION.value: "Account creation or sign-in page that must be completed before applying",
 		}
 
 
@@ -75,12 +77,26 @@ class ApplicationSection(BaseModel):
 
 	model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
 
-	type: SectionType = Field(description="Type of section")
+	section_type: SectionType = Field(description="Type of section")
 	name: Optional[str] = Field(None, description="Name of section if present in DOM")
 	section_index: int = Field(description="Order of section on page (0-indexed)")
 	is_complete: bool = Field(default=False, description="Whether all required fields are filled")
 	has_errors: bool = Field(default=False, description="Whether section has validation errors")
 	element_indices: List[int] = Field(default_factory=list, description="Backend node IDs of elements in this section")
+
+
+class SectionIdentificationOutput(BaseModel):
+	"""Output from section identification step, including section info and question texts."""
+
+	model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
+
+	section_type: SectionType = Field(description="Type of section")
+	name: Optional[str] = Field(None, description="Name of section if present in DOM")
+	section_index: int = Field(description="Order of section on page (0-indexed)")
+	is_complete: bool = Field(default=False, description="Whether all required fields are filled")
+	has_errors: bool = Field(default=False, description="Whether section has validation errors")
+	element_indices: List[int] = Field(default_factory=list, description="Backend node IDs of elements in this section")
+	question_texts: List[str] = Field(default_factory=list, description="List of question texts found in this section")
 
 
 class QuestionOption(BaseModel):

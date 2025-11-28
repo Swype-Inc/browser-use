@@ -22,11 +22,13 @@ You are identifying the next application section that needs to be filled.
 3. If no explicit grouping exists, create logical groupings based on field proximity and semantic meaning
 4. Identify the next section that needs attention (not yet completed)
 5. Return the section type, name (if present), section_index, element_indices, and completion status
+6. **Extract all question texts** found in this section (labels, placeholders, aria-labels, or nearby text that identifies form fields). List them in the `question_texts` field. This helps the next step focus on parsing details rather than guessing what questions exist.
 
 **Important:**
 
 - Only identify sections that are currently visible on the page
 - Skip sections that are already completed (check completed_sections list)
 - If all sections are complete, return null
+- Include ALL question texts you can identify in the section - this is critical for the next parsing step
 
-Return the next section that needs to be filled, or null if all sections are complete.
+Return the next section that needs to be filled (including question_texts), or null if all sections are complete.

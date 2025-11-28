@@ -350,11 +350,8 @@ class TokenCost:
 				
 				role_emoji = '🧠' if msg.role == 'system' else '💬' if msg.role == 'user' else '🔨'
 				logger.info(f'{GRAY}{role_emoji} [{msg.role.upper()}]:{RESET}')
-				# Truncate very long content for readability
-				if len(content) > 5000:
-					logger.info(f'{GRAY}{content[:5000]}...\n[Truncated - {len(content)} total chars]{RESET}')
-				else:
-					logger.info(f'{GRAY}{content}{RESET}')
+				# Log full content without truncation
+				logger.info(f'{GRAY}{content}{RESET}')
 				if i < len(messages) - 1:
 					logger.info('')  # Empty line between messages
 			

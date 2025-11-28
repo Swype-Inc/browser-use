@@ -186,6 +186,8 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		final_response_after_failure: bool = True,
 		llm_screenshot_size: tuple[int, int] | None = None,
 		_url_shortening_limit: int = 25,
+		email: str | None = None,
+		password: str | None = None,
 		**kwargs,
 	):
 		# Validate llm_screenshot_size
@@ -344,6 +346,10 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Initialize history
 		self.history = AgentHistoryList(history=[], usage=None)
+		
+		# Store email and password for job application pipeline
+		self.email = email
+		self.password = password
 
 		# Initialize agent directory
 		import time
@@ -2127,6 +2133,8 @@ Since no plan is available, you should:
 				browser_session=self.browser_session,
 				llm=self.llm,
 				answer_generator_client=answer_generator_client,
+				email=self.email,
+				password=self.password,
 			)
 
 			self.logger.info('🚀 Starting job application pipeline...')
