@@ -63,6 +63,60 @@ def _build_filling_prompt(question: ApplicationQuestion, answer: QuestionAnswer)
 	)
 
 
+def _format_action_history(action_history: List[dict]) -> str:
+	"""Format action history for the prompt.
+	
+	Args:
+		action_history: List of dicts with 'step', 'actions', 'results', 'reasoning', 'is_filled'
+		
+	Returns:
+		Formatted history string
+	"""
+	if not action_history:
+		return ""
+	
+	lines = ["<action_history>"]
+	for entry in action_history:
+		step = entry.get('step', 0)
+		actions = entry.get('actions', [])
+		results = entry.get('results', [])
+		reasoning = entry.get('reasoning')
+		is_filled = entry.get('is_filled', False)
+		
+		lines.append(f"<step_{step}>:")
+		lines.append(f"  State: Question is {'filled' if is_filled else 'not filled yet'}")
+		if reasoning:
+			lines.append(f"  Reasoning: {reasoning}")
+		
+		if actions:
+			lines.append(f"  Actions:")
+			for i, action in enumerate(actions):
+				# Format action nicely
+				action_dict = action.model_dump(exclude_unset=True) if hasattr(action, 'model_dump') else {}
+				action_type = list(action_dict.keys())[0] if action_dict else "unknown"
+				action_params = action_dict.get(action_type, {})
+				
+				# Get corresponding result and group it with the action
+				result_text = ""
+				if i < len(results):
+					result = results[i]
+					if hasattr(result, 'error') and result.error:
+						result_text = f" → FAILED: {result.error}"
+					elif hasattr(result, 'extracted_content') and result.extracted_content:
+						content_preview = result.extracted_content[:100].replace('\n', ' ')
+						result_text = f" → SUCCESS: {content_preview}..."
+					else:
+						result_text = " → EXECUTED"
+				
+				lines.append(f"    - {action_type}({action_params}){result_text}")
+		
+		lines.append(f"</step_{step}>")
+		lines.append("")
+	
+	lines.append("</action_history>")
+	return "\n".join(lines)
+
+
 async def get_question_fill_output(
 	browser_session: BrowserSession,
 	llm: BaseChatModel,
@@ -70,6 +124,7 @@ async def get_question_fill_output(
 	browser_state: BrowserStateSummary,
 	question: ApplicationQuestion,
 	answer: QuestionAnswer,
+	action_history: Optional[List[dict]] = None,
 ) -> tuple[bool, List[ActionModel], Optional[str]]:
 	"""Get assessment and actions for filling a question using LLM in a single call.
 	
@@ -80,6 +135,7 @@ async def get_question_fill_output(
 		browser_state: Current browser state
 		question: The question to fill
 		answer: The answer to fill with
+		action_history: Optional list of previous attempts with actions and results
 		
 	Returns:
 		Tuple of (is_filled, actions, reasoning)
@@ -93,7 +149,12 @@ async def get_question_fill_output(
 	# Build combined prompt using template
 	prompt_text = _build_filling_prompt(question, answer)
 	
-	action_prompt_content = f"""{prompt_text}
+	# Format action history if provided
+	history_text = ""
+	if action_history:
+		history_text = f"\n\n{_format_action_history(action_history)}\n"
+	
+	action_prompt_content = f"""{prompt_text}{history_text}
 
 <available_actions>
 {actions_description}
@@ -188,12 +249,12 @@ async def execute_actions(
 	Returns:
 		List of action results
 	"""
-	logger.debug(f'⚡ Executing {len(actions)} action(s)...')
+	logger.info(f'⚡ Executing {len(actions)} action(s)...')
 
 	results = []
 	for i, action in enumerate(actions):
 		try:
-			logger.debug(f'Executing action {i + 1}/{len(actions)}: {action.model_dump(exclude_unset=True)}')
+			logger.info(f'Executing action {i + 1}/{len(actions)}: {action.model_dump(exclude_unset=True)}')
 			
 			result = await tools.act(
 				action=action,
@@ -243,12 +304,13 @@ async def run(
 		Result of the fill operation
 	"""
 	max_attempts = 20
-	attempt = 0
+	step = 0
+	action_history: List[dict] = []  # Track history of steps
 	
 	try:
-		while attempt < max_attempts:
-			attempt += 1
-			logger.info(f'🔄 Fill attempt {attempt}/{max_attempts} for question: "{question.question_text}"')
+		while step < max_attempts:
+			step += 1
+			logger.info(f'🔄 Fill step {step}/{max_attempts} for question: "{question.question_text}"')
 			
 			# 1. Read browser state
 			browser_state = await browser_session.get_browser_state_summary(
@@ -256,13 +318,14 @@ async def run(
 				include_screenshot=True
 			)
 			
-			# 2. Get assessment and actions in one LLM call
+			# 2. Get assessment and actions in one LLM call (with history)
 			is_filled, actions, reasoning = await get_question_fill_output(
-				browser_session, llm, tools, browser_state, question, answer
+				browser_session, llm, tools, browser_state, question, answer, action_history
 			)
 			
-			# 3. If already filled, return success
-			if is_filled:
+			# 3. If already filled AND no actions needed, return success
+			# Note: If actions are provided even when is_filled=True (e.g., closing dropdown), we must execute them and reassess
+			if is_filled and not actions:
 				logger.info(f'✅ Question already filled correctly: "{question.question_text}"')
 				if reasoning:
 					logger.debug(f'💭 Assessment reasoning: {reasoning}')
@@ -271,7 +334,15 @@ async def run(
 			# 4. If no actions provided but not filled, log warning and retry
 			if not actions:
 				logger.warning(f'⚠️ No actions provided but question not filled. Reasoning: {reasoning or "None provided"}. Retrying...')
-				if attempt < max_attempts:
+				# Add to history
+				action_history.append({
+					'step': step,
+					'actions': [],
+					'results': [],
+					'reasoning': reasoning,
+					'is_filled': False,
+				})
+				if step < max_attempts:
 					await browser_session._dom_watchdog.wait_for_page_stability()
 					continue
 				else:
@@ -287,8 +358,16 @@ async def run(
 			# 6. Check if any action failed
 			if results and any(r.error for r in results):
 				errors = [r.error for r in results if r.error]
-				logger.warning(f'⚠️ Actions failed on attempt {attempt}: {", ".join(errors)}')
-				if attempt >= max_attempts:
+				logger.warning(f'⚠️ Actions failed on step {step}: {", ".join(errors)}')
+				# Add to history
+				action_history.append({
+					'step': step,
+					'actions': actions,
+					'results': results,
+					'reasoning': reasoning,
+					'is_filled': False,
+				})
+				if step >= max_attempts:
 					return FillResult(
 						success=False,
 						error=f"Failed to fill question after {max_attempts} attempts: {', '.join(errors)}",
@@ -307,20 +386,29 @@ async def run(
 				include_screenshot=True
 			)
 			is_filled, _, reasoning = await get_question_fill_output(
-				browser_session, llm, tools, browser_state, question, answer
+				browser_session, llm, tools, browser_state, question, answer, action_history
 			)
 			
+			# Add this step to history
+			action_history.append({
+				'step': step,
+				'actions': actions,
+				'results': results,
+				'reasoning': reasoning,
+				'is_filled': is_filled,
+			})
+			
 			if is_filled:
-				logger.info(f'✅ Question filled successfully on attempt {attempt}: "{question.question_text}"')
+				logger.info(f'✅ Question filled successfully on step {step}: "{question.question_text}"')
 				if reasoning:
 					logger.debug(f'💭 Assessment reasoning: {reasoning}')
 				return FillResult(success=True, element_index=question.element_index)
 			else:
-				logger.warning(f'⚠️ Question not filled correctly after attempt {attempt}, retrying...')
+				logger.warning(f'⚠️ Question not filled correctly after step {step}, retrying...')
 				if reasoning:
 					logger.debug(f'💭 Assessment reasoning: {reasoning}')
-				if attempt < max_attempts:
-					# Wait for DOM stability before next attempt
+				if step < max_attempts:
+					# Wait for DOM stability before next step
 					await browser_session._dom_watchdog.wait_for_page_stability()
 		
 		# If we get here, we've exhausted all attempts

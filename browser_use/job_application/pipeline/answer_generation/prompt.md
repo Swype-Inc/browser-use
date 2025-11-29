@@ -13,6 +13,10 @@ You are helping to fill out a job application form. Given a question and the use
 
 {options}
 
+## Available Files
+
+{available_files}
+
 ## User Profile
 
 ```json
@@ -22,6 +26,7 @@ You are helping to fill out a job application form. Given a question and the use
 ## Instructions
 
 1. Generate an answer that matches the question type:
+
    - **TEXT**: Provide a text answer based on user profile
    - **EMAIL**: Use the user's email address
    - **PHONE**: Use the user's phone number
@@ -30,7 +35,7 @@ You are helping to fill out a job application form. Given a question and the use
    - **SINGLE_SELECT**: Choose one option from the available options
    - **MULTI_SELECT**: Choose one or more options from the available options
    - **YES_NO**: Answer "Yes" or "No" based on user profile
-   - **FILE**: This will be handled separately, return a placeholder
+   - **FILE**: Provide the file_id (numeric ID as string, e.g., "793667") from Available Files that matches the question. Match the question text to the appropriate file type (e.g., "Resume" or "CV" questions should use a resume file).
 
 2. For select-type questions, choose the option that best matches the user's profile information.
 
@@ -54,5 +59,6 @@ You are helping to fill out a job application form. Given a question and the use
 
 12. For skills questions, reference the skills array from the user profile.
 
-Return your answer in the specified format.
+13. For file upload questions, return the file_id (numeric ID as string, e.g., "793667") from Available Files that matches the question. The application code will download the file using the file_id and convert it to a file path.
 
+Return your answer in the specified format.

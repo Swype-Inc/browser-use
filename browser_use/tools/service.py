@@ -1379,6 +1379,7 @@ Validated Code (after quote fixing):
 		"""Execute an action"""
 
 		for action_name, params in action.model_dump(exclude_unset=True).items():
+			logger.info(f'Executing action {action_name}: {params}')
 			if params is not None:
 				# Use Laminar span if available, otherwise use no-op context manager
 				if Laminar is not None:

@@ -63,6 +63,8 @@ class JobApplicationPipeline:
 		self.logger = logging.getLogger(__name__)
 		# Initialize Tools for navigation actions
 		self.tools = Tools()
+		# Initialize Tools for question filling (excludes search action)
+		self.question_filling_tools = Tools(exclude_actions=['search'])
 
 	@observe(name='pipeline.run', ignore_input=True, ignore_output=True)
 	async def run(self) -> ApplicationResult:
@@ -163,7 +165,7 @@ class JobApplicationPipeline:
 				else:
 					# No more pages or navigation failed, we're done
 					self.logger.info('All sections complete and no more pages!')
-					break
+				break
 
 			self.state.current_section = section
 			section_name = section.name or section.section_type.value
@@ -183,40 +185,54 @@ class JobApplicationPipeline:
 			if section_with_questions is None:
 				section_with_questions = self.state.add_section(section)
 
-			# 2. Identify questions in section
-			questions = await identify_questions_in_section(
-				self.browser_session, self.llm, section, question_texts
-			)
-
-			# Add questions to section tracking
-			for question in questions:
-				# Check if question already exists
-				question_exists = any(
-					q.question_text == question.question_text for q in section_with_questions.questions
+			# 2. Loop: Extract next question → Generate answer → Fill → Repeat
+			while True:
+				# Get list of already filled questions in this section
+				filled_question_texts = [
+					qwa.question_text 
+					for qwa in section_with_questions.questions 
+					if qwa.answer and qwa.answer.filled_successfully
+				]
+				
+				# Extract the next question that needs to be filled
+				question = await identify_questions_in_section(
+					self.browser_session, 
+					self.llm, 
+					section, 
+					question_texts,
+					filled_question_texts,
 				)
-				if not question_exists:
-					section_with_questions.questions.append(QuestionWithAnswer.from_question(question))
-
-			# 3. Generate and fill answers
-			for question in questions:
-				# Check if already answered
+				
+				# If no more questions, mark section as complete and break
+				if question is None:
+					self.logger.info(f'All questions filled in section: {section_name}')
+					section_with_questions.is_complete = True
+					break
+				
+				# Add question to tracking if not already present
 				question_with_answer = None
 				for qwa in section_with_questions.questions:
 					if qwa.question_text == question.question_text:
 						question_with_answer = qwa
 						break
-
-				if question_with_answer and question_with_answer.answer and question_with_answer.answer.filled_successfully:
-					continue  # Already filled successfully
-
+				
+				if question_with_answer is None:
+					question_with_answer = QuestionWithAnswer.from_question(question)
+					section_with_questions.questions.append(question_with_answer)
+				
+				# Skip if already filled successfully (shouldn't happen, but safety check)
+				if question_with_answer.answer and question_with_answer.answer.filled_successfully:
+					self.logger.info(f'Skipping already filled question: "{question.question_text}"')
+					continue
+				
 				# Generate answer (via websocket to browser extension or LLM)
 				answer = await generate_answer(
 					question, self.llm, self.user_profile, self.answer_generator_client
 				)
 
-				# Fill answer
+				# Fill answer (use question_filling_tools which excludes search)
 				fill_result = await fill_answer(
-					self.browser_session, self.llm, self.tools, question, answer
+					self.browser_session, self.llm, self.question_filling_tools, question, answer
 				)
 
 				# Update answer with fill result
@@ -225,18 +241,12 @@ class JobApplicationPipeline:
 					answer.error_message = fill_result.error
 
 				# Update question with answer
-				if question_with_answer:
-					question_with_answer.answer = answer
-				else:
-					# Shouldn't happen, but handle gracefully
-					self.state.update_question_answer(section_name, question.question_text, answer)
+				question_with_answer.answer = answer
 
 				# Handle errors
 				if not fill_result.success:
 					await self.handle_fill_error(question, answer, fill_result.error)
 
-			section_with_questions.is_complete = True
-            
 			# 4. Attempt to move to next page
 			navigation_result = await navigate_to_next_page(self.browser_session)
 

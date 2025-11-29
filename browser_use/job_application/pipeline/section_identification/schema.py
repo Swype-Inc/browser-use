@@ -14,7 +14,7 @@ class SectionIdentificationOutput(BaseModel):
 
 	no_more_sections: bool = Field(default=False, description="Set to True if there are no more sections to identify on this page")
 	section_type: Optional[SectionType] = Field(None, description="Type of section (required if no_more_sections is False)")
-	name: Optional[str] = Field(None, description="Name of section if present in DOM")
+	name: Optional[str] = Field(None, description="Human-readable section title visible to applicants (e.g., 'Personal Information', 'Education History'). Do NOT use CSS classes, DOM attributes, or technical identifiers. Leave null if no visible title exists.")
 	section_index: int = Field(default=0, description="Order of section on page (0-indexed)")
 	is_complete: bool = Field(default=False, description="Whether all required fields are filled")
 	has_errors: bool = Field(default=False, description="Whether section has validation errors")
